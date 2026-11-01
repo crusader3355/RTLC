@@ -109,6 +109,7 @@ class CopyUtility():
                 self.exit()
 
         self.refreshTime = self.config.refreshTime
+        self.stabilizeTime = self.config.stabilizeTime
         self.extensionFile = tuple(
             self.config.extensionFile.replace(' ', '').split(','))
 
@@ -116,6 +117,7 @@ class CopyUtility():
         self.log.info(f'    Remote folder: "{self.remotePath}"')
         self.log.info(f'    Local folder: "{self.localPath}"')
         self.log.info(f'    Refresh time: {self.refreshTime}')
+        self.log.info(f'    Stabilize time: {self.stabilizeTime}')
         self.log.info(f'    Extension file: {self.extensionFile}')
         self.log.info(f'    Start date: {self.config.startDate}')
         self.log.info(
@@ -135,6 +137,7 @@ class CopyUtility():
                 self.log.error(f'REMOVE {exc}')
 
         self.remoteList = []
+        self.pending = {}
         atexit.register(self.end)
         self.log.info('Service started.')
 
@@ -167,6 +170,7 @@ class CopyUtility():
 
     def walker(self):
         self.log.info(f'Refresh')
+        now = time.time()
         found = {}
         self.scandir(self.remotePath, found)
 
@@ -178,9 +182,29 @@ class CopyUtility():
                 continue
             backlog.append((path, size, mtime))
 
-        self.log.info(f'Found {len(backlog)} files to copy.')
-        copied_ok = set()
+        # Стабилизация источника: копируем только файлы, чьи размер и
+        # mtime не изменились между сканированиями и которые «отлежались»
+        # не меньше stabilizeTime с момента первого обнаружения.
+        ready = []
         for path, size, mtime in backlog:
+            prev = self.pending.get(path)
+            if prev is None or prev[0] != size or prev[1] != mtime:
+                if prev is None:
+                    self.log.debug(f'Pending (first seen): "{path}"')
+                else:
+                    self.log.debug(f'Pending (still changing): "{path}"')
+                self.pending[path] = (size, mtime, now)
+                continue
+            if now - prev[2] >= self.stabilizeTime:
+                ready.append((path, size, mtime))
+        for path in list(self.pending):
+            if path not in found:
+                del self.pending[path]
+
+        self.log.info(
+            f'Found {len(backlog)} files to copy ({len(ready)} stable).')
+        copied_ok = set()
+        for path, size, mtime in ready:
             newName = f'{uuid4()}{os.path.splitext(path)[1]}'
             if self.copyfile(path, f'{self.localPath}/{newName}'):
                 resent = self.state['files'].get(path) is not None

@@ -41,7 +41,7 @@ def test_basic_copy_byte_identical(paths, make_rtlc):
             os.path.join(sub, 'c.dcm'),
     ]):
         payloads.add(write_dicom(target, 4096, seed=i))
-    inst.walker()
+    run_until_copied(inst, paths['local'], want=3, timeout=10)
     assert not inst.remoteList, f'остались необработанные: {inst.remoteList}'
     copied = local_contents(paths['local'])
     assert len(copied) == 3
@@ -52,7 +52,10 @@ def test_basic_copy_byte_identical(paths, make_rtlc):
 
 def test_slow_write_copied_only_after_complete(paths, make_rtlc):
     """Файл пишется кусками с паузами: копия должна появиться только после
-    завершения записи и совпадать побайтово (проверка «стабилизации»)."""
+    завершения записи и совпадать побайтово (проверка «стабилизации»).
+
+    Паузы между кусками (0.15 с) меньше окна стабилизации (0.3 с):
+    корректная реализация ждёт окно тишины после ПОСЛЕДНЕГО куска."""
     inst = make_rtlc()
     os.makedirs(os.path.join(paths['remote'], 'series1'))
     target = os.path.join(paths['remote'], 'series1', 'img.dcm')
@@ -65,8 +68,11 @@ def test_slow_write_copied_only_after_complete(paths, make_rtlc):
             f.write(full[:len(full) // 3])
             f.flush()
             started.set()
-            time.sleep(0.5)
-            f.write(full[len(full) // 3:])
+            time.sleep(0.15)
+            f.write(full[len(full) // 3:2 * len(full) // 3])
+            f.flush()
+            time.sleep(0.15)
+            f.write(full[2 * len(full) // 3:])
             f.flush()
         done.set()
 
@@ -112,7 +118,7 @@ def test_old_timestamp_file_not_lost(paths, make_rtlc):
     появляется ПОСЛЕ того, как watermark уже ушёл вперёд."""
     inst = make_rtlc()
     write_dicom(os.path.join(paths['remote'], 'first.dcm'), 4096, seed=1)
-    inst.walker()  # watermark ушёл на "сейчас"
+    run_until_copied(inst, paths['local'], want=1, timeout=10)
     assert len(local_files(paths['local'])) == 1
 
     restored = os.path.join(paths['remote'], 'restored.dcm')
@@ -163,7 +169,7 @@ def test_resend_same_name_new_content_not_lost(paths, make_rtlc):
     inst = make_rtlc()
     f = os.path.join(paths['remote'], 'study.dcm')
     write_dicom(f, 4096, seed=1)
-    inst.walker()
+    run_until_copied(inst, paths['local'], want=1, timeout=10)
     assert len(local_files(paths['local'])) == 1
 
     time.sleep(0.05)
@@ -184,7 +190,7 @@ def test_burst_500_files_nothing_lost(paths, make_rtlc):
         os.makedirs(sub, exist_ok=True)
         payloads.add(write_dicom(os.path.join(sub, f'img_{i:04d}.dcm'),
                                  2048, seed=i))
-    inst.walker()
+    run_until_copied(inst, paths['local'], want=520, timeout=120)
     assert not inst.remoteList
     files = local_files(paths['local'])
     assert len(files) == 520, f'потеряно {520 - len(files)} файлов'
@@ -267,7 +273,8 @@ def test_zero_size_and_locked_file_queue_survives(paths, make_rtlc):
                                       0x80, None)
         assert handle not in (None, 0, 0xFFFFFFFFFFFFFFFF)
     try:
-        inst.walker()  # не должно упасть
+        # пока bad.dcm залочен, остальные должны скопироваться
+        run_until_copied(inst, paths['local'], want=2, timeout=10)
     finally:
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
@@ -276,7 +283,7 @@ def test_zero_size_and_locked_file_queue_survives(paths, make_rtlc):
     assert b'' in contents, 'нулевой файл не скопирован'
     assert good in contents, 'хороший файл не скопирован из-за соседнего битого'
 
-    copied = run_until_copied(inst, paths['local'], want=3, timeout=5)
+    copied = run_until_copied(inst, paths['local'], want=3, timeout=10)
     assert len(copied) == 3, 'залоченный файл не докопировался после снятия лока'
     log = open(os.path.join(paths['work'], 'Logs', 'rtlc.log'),
                encoding='utf-8').read()

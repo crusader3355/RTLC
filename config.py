@@ -10,6 +10,7 @@ class Config:
         self.timeStamp: float = 0.0
         self.refreshTime: int = 60
         self.extensionFile: str = ''
+        self.stabilizeTime: float = 5.0
         self.remotePath: str = './remote'
         self.localPath: str = './local'
         self.useNetShare: bool = False
@@ -62,6 +63,9 @@ class Config:
         self.extensionFile = self.getstring('Options',
                                             'extension_file',
                                             fallback=self.extensionFile)
+        self.stabilizeTime = self.getfloat('Options',
+                                           'stabilize_time',
+                                           fallback=self.stabilizeTime)
         self.remotePath = self.getstring('Paths',
                                          'remote',
                                          fallback=self.remotePath)
@@ -100,7 +104,8 @@ class Config:
             'start_date': self.startDate,
             'last_file': self.timeStamp,
             'refresh_time': self.refreshTime,
-            'extension_file': self.extensionFile
+            'extension_file': self.extensionFile,
+            'stabilize_time': self.stabilizeTime
         }
         self.config['Paths'] = {
             'remote': self.remotePath,
