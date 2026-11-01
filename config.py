@@ -1,4 +1,5 @@
 import configparser
+import os
 
 
 class Config:
@@ -126,8 +127,10 @@ class Config:
             'backups': self.logsBackups
         }
         try:
-            with open(self.ini, 'w', encoding='utf-8') as configfile:
+            tmp = f'{self.ini}.tmp'
+            with open(tmp, 'w', encoding='utf-8') as configfile:
                 self.config.write(configfile)
-                return (f'Building configuration file completed successfully.')
+            os.replace(tmp, self.ini)
+            return (f'Building configuration file completed successfully.')
         except Exception as exc:
             return (f'Error building configuration file "{exc}": {self.ini}')

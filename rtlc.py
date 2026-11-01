@@ -232,6 +232,7 @@ class CopyUtility():
                 self.log.info('Stop requested, copy loop interrupted.')
                 break
             newName = f'{uuid4()}{os.path.splitext(path)[1]}'
+            started = time.time()
             if self.copyfile(path, f'{self.localPath}/{newName}'):
                 resent = self.state['files'].get(path) is not None
                 self.state['files'][path] = {
@@ -242,11 +243,15 @@ class CopyUtility():
                 self.saveState()
                 copied_ok.add(path)
                 self.log.info(
-                    f'File "{newName} << {path}" copied to local folder'
+                    f'File "{newName} << {path}" copied to local folder: '
+                    f'{size} bytes in {time.time() - started:.2f}s'
                     f'{" (re-sent, content changed)" if resent else ""}.')
             else:
                 self.log.error(f"File '{path}' not copied to local folder.")
         self.remoteList = [p for (p, _, _) in backlog if p not in copied_ok]
+        self.log.info(
+            f'Cycle done: {len(found)} found, {len(backlog)} to copy, '
+            f'{len(copied_ok)} copied, {len(self.remoteList)} in backlog.')
 
         if found:
             self.timeStamp = max(mtime for _, mtime in found.values())
