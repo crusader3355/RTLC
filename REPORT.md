@@ -285,6 +285,29 @@ python -m pytest tests/ -v
 - **Smoke-проверка на живом сервере**: uvicorn на 127.0.0.1:8765, файл
   `.dcm` скопирован движком и подтверждён побайтово через
   `/api/v1/status` + `/api/v1/ledger`, control stop/start по HTTP.
-- Зависимости: `requirements.txt` (fastapi, uvicorn), dev —
+- Зависимости: `requirements.txt` (fastapi, uvicorn, websockets), dev —
   `requirements-dev.txt` (+pytest, httpx). Для GUI нужен Python 3.10+
   (ядро rtlc.py остаётся совместимым с более старыми версиями).
+
+## 10. Продакшен-сборка (dist/rtlc.exe)
+
+Один exe (`PyInstaller rtlc.spec`, onefile, ~18 МБ, без UPX) объединяет
+все режимы (`rtlc_main.py`):
+
+| Команда | Режим |
+|---|---|
+| `rtlc.exe` / `rtlc.exe gui` | Web UI на `http://127.0.0.1:8765/` |
+| `rtlc.exe run` | консольный цикл копирования |
+| `rtlc.exe install/start/stop/remove` | служба Windows (как раньше) |
+| `rtlc.exe service` | вызывается SCM (`_exe_args_` в service.py) |
+
+- `static/index.html` зашит в бандл (читается из _MEIPASS); config.ini,
+  Logs/, rtlc.state.json — рядом с exe (запись, `getModulePath`).
+- В exe зашиты uvicorn + websockets (WS проверен в frozen-сборке),
+  pywin32 (служба), pysmb (SMB). Версионный ресурс — file_version_info.txt.
+- Проверено на изолированном стенде: первый запуск создаёт config.ini,
+  статус честно показывает «настройте конфиг»; настройка через PUT,
+  старт, scan_now, копия побайтово идентична; `run`-режим пишет ledger;
+  `--help` работает. Установка службы не проверялась (требует прав
+  администратора; механика pywin32 не менялась).
+- Пересборка: `.venv/Scripts/python.exe -m PyInstaller rtlc.spec --clean --noconfirm`.

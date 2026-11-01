@@ -73,6 +73,9 @@ class MyServiceFramework(win32serviceutil.ServiceFramework):
 
     _svc_name_ = 'RTLC'
     _svc_display_name_ = 'Remote To Local Copy'
+    # SCM стартует exe с этим аргументом — лаунчер переводит процесс
+    # в режим службы (иначе запуск без аргументов открыл бы Web UI)
+    _exe_args_ = 'service'
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
@@ -88,10 +91,14 @@ class MyServiceFramework(win32serviceutil.ServiceFramework):
         self.service_impl.run()
 
 
-if __name__ == '__main__':
+def main():
     if getLenSysArg() == 1:
         servicemanager.Initialize()
         servicemanager.PrepareToHostSingle(MyServiceFramework)
         servicemanager.StartServiceCtrlDispatcher()
     else:
         win32serviceutil.HandleCommandLine(MyServiceFramework)
+
+
+if __name__ == '__main__':
+    main()

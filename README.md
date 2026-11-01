@@ -14,8 +14,16 @@
     1. Install to Windows(x64):
         a. Скачать 'dist/rtlc.exe'.
         b. Закинуть бинарь в рабочую директорию (Например: 'C:/rtlc/').
-        c. Открыть командную строку от имени администратора и запустить бинарь с параметром install (Пример: 'C:/rtlc/rtlc.exe install')
-        e. При первом запуске утилиты (Через 'Службы' или комнадную строку (Пример: 'C:/rtlc/rtlc.exe start')) она сгенерирует конфигурационный файл в директорию с бинарем (Пример: 'C:/rtlc/config.ini'). 
+        c. Режимы запуска:
+           - 'rtlc.exe' (или 'rtlc.exe gui') — Web UI на http://127.0.0.1:8765/
+             (при первом запуске создаёт config.ini и ждёт настройки через браузер);
+           - 'rtlc.exe run' — консольный цикл копирования без Web UI;
+           - служба Windows (SMB-режим): командная строка от имени администратора,
+             'C:/rtlc/rtlc.exe install', затем 'rtlc.exe start' / 'stop' / 'remove'.
+        d. Сборка exe из исходников:
+           python -m venv .venv && .venv/Scripts/pip install -r requirements.txt pyinstaller pywin32 pysmb
+           .venv/Scripts/python.exe -m PyInstaller rtlc.spec --clean --noconfirm
+           (результат: dist/rtlc.exe, режимы: gui/run/service; версия — file_version_info.txt)
     2. Install to RedOS:
         a. Скачать файлы: 'rtlc.py, config.py, install_rtlc.sh'.
         b. Закинуть файлы в домашнюю директорию (Например: '/home/lins/').

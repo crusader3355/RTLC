@@ -1,15 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
-
+# Продакшен-сборка: один rtlc.exe = Web UI (по умолчанию) + консольный
+# режим (run) + служба Windows (service/install/start/...).
+# Сборка: .venv/Scripts/python.exe -m PyInstaller rtlc.spec --clean --noconfirm
 
 block_cipher = None
 
-
 a = Analysis(
-    ['service.py'],
+    ['rtlc_main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=['win32timezone'],
+    datas=[('static', 'static')],
+    hiddenimports=[
+        'win32timezone',
+        'uvicorn.logging',
+        'uvicorn.loops.auto',
+        'uvicorn.loops.asyncio',
+        'uvicorn.protocols.http.auto',
+        'uvicorn.protocols.http.h11_impl',
+        'uvicorn.protocols.websockets.auto',
+        'uvicorn.protocols.websockets.websockets_impl',
+        'uvicorn.lifespan.on',
+        'uvicorn.lifespan.off',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -32,13 +44,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
-    runtime_tmpdir='.',
+    runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
-    entitlements_file=None,
+    entitlements=None,
+    version='file_version_info.txt',
 )
