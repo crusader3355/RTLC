@@ -13,6 +13,9 @@ from time import mktime, strptime, strftime, gmtime
 
 from config import Config
 
+TEMP_PREFIX = '.rtlc-part-'
+COPY_BUFFER_SIZE = 1024 * 1024
+
 
 def getModulePath() -> str:
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -138,6 +141,7 @@ class CopyUtility():
 
         self.remoteList = []
         self.pending = {}
+        self.cleanupStaleParts()
         atexit.register(self.end)
         self.log.info('Service started.')
 
@@ -236,7 +240,9 @@ class CopyUtility():
                             self.scandir(entry.path, found)
                         elif entry.is_file(
                                 follow_symlinks=False
-                        ) and entry.name.endswith(self.extensionFile):
+                        ) and not entry.name.startswith(
+                                TEMP_PREFIX) and entry.name.endswith(
+                                self.extensionFile):
                             stat = entry.stat()
                             found[entry.path] = (stat.st_size,
                                                  stat.st_mtime)
@@ -247,12 +253,40 @@ class CopyUtility():
             self.log.error(f"Directory '{path}' scan error: {exc}")
 
     def copyfile(self, path, filename):
+        # Атомарная запись: копия во временное имя в том же томе, затем
+        # os.replace — PACS никогда не видит частично скопированный файл.
+        tmp = os.path.join(self.localPath, f'{TEMP_PREFIX}{uuid4()}')
         try:
-            shutil.copy2(path, filename)
+            self._retrieve(path, tmp)
+            os.replace(tmp, filename)
             return True
         except Exception as exc:
             self.log.error(f'Copy "{path}" -> "{filename}" failed: {exc}')
             return False
+        finally:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+
+    def _retrieve(self, path, tmp):
+        with open(path, 'rb') as fsrc, open(tmp, 'wb') as fdst:
+            shutil.copyfileobj(fsrc, fdst, COPY_BUFFER_SIZE)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+        shutil.copystat(path, tmp)
+
+    def cleanupStaleParts(self):
+        try:
+            for name in os.listdir(self.localPath):
+                if name.startswith(TEMP_PREFIX):
+                    os.remove(os.path.join(self.localPath, name))
+                    self.log.info(
+                        f'Removed stale partial copy: "{name}"')
+        except Exception as exc:
+            self.log.error(
+                f'Stale partial cleanup in "{self.localPath}" failed: {exc}')
 
     def timeout(self):
         time.sleep(self.refreshTime)

@@ -153,7 +153,9 @@ def test_restart_mid_copy_no_duplicates_no_leftovers(paths, make_rtlc,
 
     hook_copy_writes(crashy)
     with pytest.raises(KeyboardInterrupt):
-        inst.walker()
+        for _ in range(50):  # крутим циклы, пока не начнётся копирование
+            inst.walker()
+            time.sleep(0.1)
 
     inst2 = make_rtlc()  # «перезапуск» приложения
     run_until_copied(inst2, paths['local'], want=2, timeout=10)
