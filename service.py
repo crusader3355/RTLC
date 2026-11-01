@@ -1,3 +1,5 @@
+import os
+
 import win32serviceutil  # ServiceFramework and commandline helper
 import win32service  # Events
 import servicemanager  # Simple setup and logging
@@ -10,27 +12,43 @@ class CopyUtilityNetShare(CopyUtility):
 
     def __init__(self):
         super().__init__()
+        if not os.path.exists(self.localPath):
+            self.log.error(f'Local folder: "{self.localPath}" not found.')
+            self.exit()
         self.shareIP = self.config.shareIP
         self.shareName = self.config.shareName
-        self.server = SmbClient.create(self.config.userName,
-                                       self.config.userPassword,
-                                       self.config.clientMachineName,
-                                       self.config.remoteMachineName)
-        self.connect()
+        self.server = self.createConnection()
+        if not self.connect():
+            self.exit()
+
+    def createConnection(self):
+        return SmbClient.create(self.config.userName,
+                                self.config.userPassword,
+                                self.config.clientMachineName,
+                                self.config.remoteMachineName)
 
     def connect(self):
         connect, msg = SmbClient.connect(self)
         if connect:
             self.log.info(msg)
-        else:
-            self.log.error(msg)
-            self.exit()
+            return True
+        self.log.error(msg)
+        return False
 
-    def copyfile(self, path, filename):
-        return SmbClient.copyfile(self, path, filename)
+    def reconnect(self):
+        self.log.info('Reconnecting to the share...')
+        try:
+            self.server = self.createConnection()
+        except Exception as exc:
+            self.log.error(f'Reconnect failed: {exc}')
+            return
+        self.connect()
 
-    def scandir(self, path):
-        SmbClient.scandir(self, path)
+    def _retrieve(self, path, tmp):
+        SmbClient.retrieve(self, path, tmp)
+
+    def scandir(self, path, found):
+        SmbClient.scandir(self, path, found)
 
 
 class MyService:
