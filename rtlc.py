@@ -120,7 +120,8 @@ class CopyUtility():
         self.refreshTime = self.config.refreshTime
         self.stabilizeTime = self.config.stabilizeTime
         self.extensionFile = tuple(
-            self.config.extensionFile.replace(' ', '').split(','))
+            ext.lower()
+            for ext in self.config.extensionFile.replace(' ', '').split(','))
 
         self.log.info(f'    Logs level: {self.config.logsLevel}')
         self.log.info(f'    Remote folder: "{self.remotePath}"')
@@ -257,7 +258,7 @@ class CopyUtility():
                         elif entry.is_file(
                                 follow_symlinks=False
                         ) and not entry.name.startswith(
-                                TEMP_PREFIX) and entry.name.endswith(
+                                TEMP_PREFIX) and entry.name.lower().endswith(
                                 self.extensionFile):
                             stat = entry.stat()
                             found[entry.path] = (stat.st_size,
