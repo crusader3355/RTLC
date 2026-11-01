@@ -8,7 +8,9 @@ echo -e "\
 [Unit]\n\
 Description=rtlc.service\n\n\
 [Service]\n\
-Type=simple\n\n\
+Type=simple\n\
+Restart=on-failure\n\
+RestartSec=5\n\n\
 User=lins\n\
 Group=lins\n\n\
 ExecStart=/usr/bin/python3 /srv/rtlc/rtlc.py\n\n\

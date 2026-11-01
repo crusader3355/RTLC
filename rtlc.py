@@ -1,15 +1,21 @@
 #Remote To Local Copy(RTLC)
+import atexit
+import json
 import logging
 import logging.handlers
 import os
 import shutil
 import sys
-import atexit
+import threading
+import time
 
 from uuid import uuid4
-from time import sleep, mktime, strptime, strftime, gmtime
+from time import mktime, strptime, strftime, gmtime
 
 from config import Config
+
+TEMP_PREFIX = '.rtlc-part-'
+COPY_BUFFER_SIZE = 1024 * 1024
 
 
 def getModulePath() -> str:
@@ -32,6 +38,7 @@ class CopyUtility():
         FOLDER_LOGS = 'Logs'
         NAME_LOG = 'rtlc.log'
         NAME_QUEUE = 'rtlc.queue'
+        NAME_STATE = 'rtlc.state.json'
 
         if not os.path.exists(FOLDER_LOGS):
             try:
@@ -47,8 +54,6 @@ class CopyUtility():
         self.config.load()
 
         SIZE_LOG = self.config.logsSize * 1024 * 1024
-
-        logging.basicConfig(handlers='')
 
         mainHandler = logging.handlers.RotatingFileHandler(
             f'{FOLDER_LOGS}/{NAME_LOG}',
@@ -94,6 +99,12 @@ class CopyUtility():
                 notPath = True
             if notPath:
                 self.exit()
+            if self.pathContains(self.remotePath, self.localPath):
+                self.log.error(
+                    f'Local folder "{self.localPath}" is the remote folder or inside it: '
+                    'the service would copy its own output forever. Refusing to start.'
+                )
+                self.exit()
 
         self.timeStamp = self.config.timeStamp
 
@@ -108,97 +119,204 @@ class CopyUtility():
                 self.exit()
 
         self.refreshTime = self.config.refreshTime
+        self.stabilizeTime = self.config.stabilizeTime
         self.extensionFile = tuple(
-            self.config.extensionFile.replace(' ', '').split(','))
+            ext.lower()
+            for ext in self.config.extensionFile.replace(' ', '').split(','))
 
         self.log.info(f'    Logs level: {self.config.logsLevel}')
         self.log.info(f'    Remote folder: "{self.remotePath}"')
         self.log.info(f'    Local folder: "{self.localPath}"')
         self.log.info(f'    Refresh time: {self.refreshTime}')
+        self.log.info(f'    Stabilize time: {self.stabilizeTime}')
         self.log.info(f'    Extension file: {self.extensionFile}')
         self.log.info(f'    Start date: {self.config.startDate}')
         self.log.info(
             f'    Last file: {strftime("%Y-%m-%d %H:%M:%S", gmtime(self.timeStamp))} (timeStamp: {self.timeStamp})'
         )
 
-        self.nameQueue = NAME_QUEUE
-        self.remoteList = []
-        self.loadQueue()
-        atexit.register(self.end)
-        self.log.info('Service started.')
+        self.nameState = NAME_STATE
+        self.loadState()
 
-    def loadQueue(self):
-        if os.path.exists(self.nameQueue):
-            with open(self.nameQueue, 'r', encoding='utf-8') as queue:
-                files = queue.readlines()
-                for file in files:
-                    self.remoteList.append((self.timeStamp, file.strip()))
+        if os.path.exists(NAME_QUEUE):
+            self.log.info(
+                f'Legacy queue file "{NAME_QUEUE}" is no longer used, '
+                'unprocessed files are detected via the state ledger.')
             try:
-                os.remove(self.nameQueue)
+                os.remove(NAME_QUEUE)
             except Exception as exc:
                 self.log.error(f'REMOVE {exc}')
 
-    def saveQueue(self):
-        if self.remoteList:
+        self.remoteList = []
+        self.pending = {}
+        self.stop_event = threading.Event()
+        self.cleanupStaleParts()
+        atexit.register(self.end)
+        self.log.info('Service started.')
+
+    @staticmethod
+    def pathContains(parent, child) -> bool:
+        try:
+            parent = os.path.realpath(parent)
+            child = os.path.realpath(child)
+            return parent == child or os.path.commonpath(
+                (parent, child)) == parent
+        except ValueError:
+            return False
+
+    def loadState(self):
+        self.state = {'files': {}}
+        if os.path.exists(self.nameState):
             try:
-                with open(self.nameQueue, 'w', encoding='utf-8') as queue:
-                    for file in self.remoteList:
-                        queue.write(f'{file[1]}\n')
+                with open(self.nameState, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and isinstance(
+                        data.get('files'), dict):
+                    self.state = data
+                self.log.info(
+                    f'State ledger loaded: {len(self.state["files"])} copied files on record.'
+                )
             except Exception as exc:
-                self.log.error(f'WRITE {exc}')
-        else:
-            if os.path.exists(self.nameQueue):
-                try:
-                    os.remove(self.nameQueue)
-                except Exception as exc:
-                    self.log.error(f'REMOVE {exc}')
+                self.log.error(
+                    f'State file "{self.nameState}" is corrupted ({exc}), starting with an empty ledger: '
+                    'previously copied files may be copied again (no data loss).'
+                )
+
+    def saveState(self):
+        tmp = f'{self.nameState}.tmp'
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(self.state, f)
+            os.replace(tmp, self.nameState)
+        except Exception as exc:
+            self.log.error(f'State file "{self.nameState}" save error: {exc}')
 
     def walker(self):
         self.log.info(f'Refresh')
-        self.scandir(self.remotePath)
-        self.remoteList = sorted(self.remoteList)
-        self.log.info(f'Found {len(self.remoteList)} files to copy.')
-        if self.remoteList:
-            self.timeStamp = self.remoteList[-1][0]
-            for file in self.remoteList[:]:
-                newName = f'{uuid4()}{os.path.splitext(file[1])[1]}'
-                if self.copyfile(f'{file[1]}', f'{self.localPath}/{newName}'):
-                    self.log.info(
-                        f'File "{newName} << {file[1]}" "{strftime("%Y-%m-%d %H:%M:%S", gmtime(file[0]))} ({file[0]})" copied to local folder.'
-                    )
-                    self.remoteList.remove(file)
+        now = time.time()
+        found = {}
+        self.scandir(self.remotePath, found)
+
+        backlog = []
+        for path, (size, mtime) in sorted(found.items()):
+            done = self.state['files'].get(path)
+            if done and done.get('size') == size and done.get(
+                    'mtime') == mtime:
+                continue
+            backlog.append((path, size, mtime))
+
+        # Стабилизация источника: копируем только файлы, чьи размер и
+        # mtime не изменились между сканированиями и которые «отлежались»
+        # не меньше stabilizeTime с момента первого обнаружения.
+        ready = []
+        for path, size, mtime in backlog:
+            prev = self.pending.get(path)
+            if prev is None or prev[0] != size or prev[1] != mtime:
+                if prev is None:
+                    self.log.debug(f'Pending (first seen): "{path}"')
                 else:
-                    self.log.error(
-                        f"File '{file[1]}' not copied to local folder.")
+                    self.log.debug(f'Pending (still changing): "{path}"')
+                self.pending[path] = (size, mtime, now)
+                continue
+            if now - prev[2] >= self.stabilizeTime:
+                ready.append((path, size, mtime))
+        for path in list(self.pending):
+            if path not in found:
+                del self.pending[path]
+
+        self.log.info(
+            f'Found {len(backlog)} files to copy ({len(ready)} stable).')
+        copied_ok = set()
+        for path, size, mtime in ready:
+            if self.stop_event.is_set():
+                self.log.info('Stop requested, copy loop interrupted.')
+                break
+            newName = f'{uuid4()}{os.path.splitext(path)[1]}'
+            started = time.time()
+            if self.copyfile(path, f'{self.localPath}/{newName}'):
+                resent = self.state['files'].get(path) is not None
+                self.state['files'][path] = {
+                    'size': size,
+                    'mtime': mtime,
+                    'dest': newName
+                }
+                self.saveState()
+                copied_ok.add(path)
+                self.log.info(
+                    f'File "{newName} << {path}" copied to local folder: '
+                    f'{size} bytes in {time.time() - started:.2f}s'
+                    f'{" (re-sent, content changed)" if resent else ""}.')
+            else:
+                self.log.error(f"File '{path}' not copied to local folder.")
+        self.remoteList = [p for (p, _, _) in backlog if p not in copied_ok]
+        self.log.info(
+            f'Cycle done: {len(found)} found, {len(backlog)} to copy, '
+            f'{len(copied_ok)} copied, {len(self.remoteList)} in backlog.')
+
+        if found:
+            self.timeStamp = max(mtime for _, mtime in found.values())
             self.config.timeStamp = self.timeStamp
             self.config.save()
-            self.saveQueue()
 
-    def scandir(self, path: str):
+    def scandir(self, path: str, found: dict):
         try:
             with os.scandir(path) as scanDir:
                 for entry in scanDir:
-                    if entry.is_dir(follow_symlinks=False):
-                        self.scandir(entry.path)
-                    elif entry.is_file(
-                            follow_symlinks=False) and entry.name.endswith(
-                                self.extensionFile) and (entry.stat().st_ctime
-                                                         > self.timeStamp):
-                        self.remoteList.append(
-                            (entry.stat().st_ctime, entry.path))
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            self.scandir(entry.path, found)
+                        elif entry.is_file(
+                                follow_symlinks=False
+                        ) and not entry.name.startswith(
+                                TEMP_PREFIX) and entry.name.lower().endswith(
+                                self.extensionFile):
+                            stat = entry.stat()
+                            found[entry.path] = (stat.st_size,
+                                                 stat.st_mtime)
+                    except OSError as exc:
+                        self.log.error(
+                            f"Entry '{entry.path}' scan error: {exc}")
         except Exception as exc:
             self.log.error(f"Directory '{path}' scan error: {exc}")
 
     def copyfile(self, path, filename):
+        # Атомарная запись: копия во временное имя в том же томе, затем
+        # os.replace — PACS никогда не видит частично скопированный файл.
+        tmp = os.path.join(self.localPath, f'{TEMP_PREFIX}{uuid4()}')
         try:
-            shutil.copy2(path, filename)
+            self._retrieve(path, tmp)
+            os.replace(tmp, filename)
             return True
         except Exception as exc:
-            print(f'[RTLC]: {exc}')
+            self.log.error(f'Copy "{path}" -> "{filename}" failed: {exc}')
             return False
+        finally:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+
+    def _retrieve(self, path, tmp):
+        with open(path, 'rb') as fsrc, open(tmp, 'wb') as fdst:
+            shutil.copyfileobj(fsrc, fdst, COPY_BUFFER_SIZE)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+        shutil.copystat(path, tmp)
+
+    def cleanupStaleParts(self):
+        try:
+            for name in os.listdir(self.localPath):
+                if name.startswith(TEMP_PREFIX):
+                    os.remove(os.path.join(self.localPath, name))
+                    self.log.info(
+                        f'Removed stale partial copy: "{name}"')
+        except Exception as exc:
+            self.log.error(
+                f'Stale partial cleanup in "{self.localPath}" failed: {exc}')
 
     def timeout(self):
-        sleep(self.refreshTime)
+        self.stop_event.wait(self.refreshTime)
 
     def exit(self):
         sys.exit()
@@ -209,6 +327,9 @@ class CopyUtility():
 
 if __name__ == '__main__':
     rtlc = CopyUtility()
-    while True:
-        rtlc.walker()
+    while not rtlc.stop_event.is_set():
+        try:
+            rtlc.walker()
+        except Exception:
+            rtlc.log.exception('Unhandled error in walker(), continuing.')
         rtlc.timeout()
