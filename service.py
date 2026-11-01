@@ -35,20 +35,26 @@ class CopyUtilityNetShare(CopyUtility):
 
 class MyService:
 
+    def __init__(self):
+        self.rtlc = None
+
     def stop(self):
-        self.running = False
+        if self.rtlc is not None:
+            self.rtlc.stop_event.set()
 
     def run(self):
-        self.running = True
         servicemanager.LogInfoMsg('Service started.')
 
         #rtlc = CopyUtility()
 
-        rtlc = CopyUtilityNetShare()
+        self.rtlc = CopyUtilityNetShare()
 
-        while self.running:
-            rtlc.walker()
-            rtlc.timeout()
+        while not self.rtlc.stop_event.is_set():
+            try:
+                self.rtlc.walker()
+            except Exception:
+                self.rtlc.log.exception('Unhandled error in walker(), continuing.')
+            self.rtlc.timeout()
 
 
 class MyServiceFramework(win32serviceutil.ServiceFramework):
@@ -58,7 +64,9 @@ class MyServiceFramework(win32serviceutil.ServiceFramework):
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        self.service_impl.stop()
+        service_impl = getattr(self, 'service_impl', None)
+        if service_impl is not None:
+            service_impl.stop()
         self.ReportServiceStatus(win32service.SERVICE_STOPPED)
 
     def SvcDoRun(self):

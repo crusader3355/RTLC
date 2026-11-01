@@ -3,6 +3,8 @@ Description=rtlc.service
 
 [Service]
 Type=simple
+Restart=on-failure
+RestartSec=5
 
 User=lins
 Group=lins

@@ -6,6 +6,7 @@ import logging.handlers
 import os
 import shutil
 import sys
+import threading
 import time
 
 from uuid import uuid4
@@ -148,6 +149,7 @@ class CopyUtility():
 
         self.remoteList = []
         self.pending = {}
+        self.stop_event = threading.Event()
         self.cleanupStaleParts()
         atexit.register(self.end)
         self.log.info('Service started.')
@@ -226,6 +228,9 @@ class CopyUtility():
             f'Found {len(backlog)} files to copy ({len(ready)} stable).')
         copied_ok = set()
         for path, size, mtime in ready:
+            if self.stop_event.is_set():
+                self.log.info('Stop requested, copy loop interrupted.')
+                break
             newName = f'{uuid4()}{os.path.splitext(path)[1]}'
             if self.copyfile(path, f'{self.localPath}/{newName}'):
                 resent = self.state['files'].get(path) is not None
@@ -306,7 +311,7 @@ class CopyUtility():
                 f'Stale partial cleanup in "{self.localPath}" failed: {exc}')
 
     def timeout(self):
-        time.sleep(self.refreshTime)
+        self.stop_event.wait(self.refreshTime)
 
     def exit(self):
         sys.exit()
@@ -317,6 +322,9 @@ class CopyUtility():
 
 if __name__ == '__main__':
     rtlc = CopyUtility()
-    while True:
-        rtlc.walker()
+    while not rtlc.stop_event.is_set():
+        try:
+            rtlc.walker()
+        except Exception:
+            rtlc.log.exception('Unhandled error in walker(), continuing.')
         rtlc.timeout()
