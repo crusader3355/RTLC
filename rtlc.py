@@ -1,13 +1,15 @@
 #Remote To Local Copy(RTLC)
+import atexit
+import json
 import logging
 import logging.handlers
 import os
 import shutil
 import sys
-import atexit
+import time
 
 from uuid import uuid4
-from time import sleep, mktime, strptime, strftime, gmtime
+from time import mktime, strptime, strftime, gmtime
 
 from config import Config
 
@@ -32,6 +34,7 @@ class CopyUtility():
         FOLDER_LOGS = 'Logs'
         NAME_LOG = 'rtlc.log'
         NAME_QUEUE = 'rtlc.queue'
+        NAME_STATE = 'rtlc.state.json'
 
         if not os.path.exists(FOLDER_LOGS):
             try:
@@ -47,8 +50,6 @@ class CopyUtility():
         self.config.load()
 
         SIZE_LOG = self.config.logsSize * 1024 * 1024
-
-        logging.basicConfig(handlers='')
 
         mainHandler = logging.handlers.RotatingFileHandler(
             f'{FOLDER_LOGS}/{NAME_LOG}',
@@ -121,71 +122,103 @@ class CopyUtility():
             f'    Last file: {strftime("%Y-%m-%d %H:%M:%S", gmtime(self.timeStamp))} (timeStamp: {self.timeStamp})'
         )
 
-        self.nameQueue = NAME_QUEUE
-        self.remoteList = []
-        self.loadQueue()
-        atexit.register(self.end)
-        self.log.info('Service started.')
+        self.nameState = NAME_STATE
+        self.loadState()
 
-    def loadQueue(self):
-        if os.path.exists(self.nameQueue):
-            with open(self.nameQueue, 'r', encoding='utf-8') as queue:
-                files = queue.readlines()
-                for file in files:
-                    self.remoteList.append((self.timeStamp, file.strip()))
+        if os.path.exists(NAME_QUEUE):
+            self.log.info(
+                f'Legacy queue file "{NAME_QUEUE}" is no longer used, '
+                'unprocessed files are detected via the state ledger.')
             try:
-                os.remove(self.nameQueue)
+                os.remove(NAME_QUEUE)
             except Exception as exc:
                 self.log.error(f'REMOVE {exc}')
 
-    def saveQueue(self):
-        if self.remoteList:
+        self.remoteList = []
+        atexit.register(self.end)
+        self.log.info('Service started.')
+
+    def loadState(self):
+        self.state = {'files': {}}
+        if os.path.exists(self.nameState):
             try:
-                with open(self.nameQueue, 'w', encoding='utf-8') as queue:
-                    for file in self.remoteList:
-                        queue.write(f'{file[1]}\n')
+                with open(self.nameState, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and isinstance(
+                        data.get('files'), dict):
+                    self.state = data
+                self.log.info(
+                    f'State ledger loaded: {len(self.state["files"])} copied files on record.'
+                )
             except Exception as exc:
-                self.log.error(f'WRITE {exc}')
-        else:
-            if os.path.exists(self.nameQueue):
-                try:
-                    os.remove(self.nameQueue)
-                except Exception as exc:
-                    self.log.error(f'REMOVE {exc}')
+                self.log.error(
+                    f'State file "{self.nameState}" is corrupted ({exc}), starting with an empty ledger: '
+                    'previously copied files may be copied again (no data loss).'
+                )
+
+    def saveState(self):
+        tmp = f'{self.nameState}.tmp'
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(self.state, f)
+            os.replace(tmp, self.nameState)
+        except Exception as exc:
+            self.log.error(f'State file "{self.nameState}" save error: {exc}')
 
     def walker(self):
         self.log.info(f'Refresh')
-        self.scandir(self.remotePath)
-        self.remoteList = sorted(self.remoteList)
-        self.log.info(f'Found {len(self.remoteList)} files to copy.')
-        if self.remoteList:
-            self.timeStamp = self.remoteList[-1][0]
-            for file in self.remoteList[:]:
-                newName = f'{uuid4()}{os.path.splitext(file[1])[1]}'
-                if self.copyfile(f'{file[1]}', f'{self.localPath}/{newName}'):
-                    self.log.info(
-                        f'File "{newName} << {file[1]}" "{strftime("%Y-%m-%d %H:%M:%S", gmtime(file[0]))} ({file[0]})" copied to local folder.'
-                    )
-                    self.remoteList.remove(file)
-                else:
-                    self.log.error(
-                        f"File '{file[1]}' not copied to local folder.")
+        found = {}
+        self.scandir(self.remotePath, found)
+
+        backlog = []
+        for path, (size, mtime) in sorted(found.items()):
+            done = self.state['files'].get(path)
+            if done and done.get('size') == size and done.get(
+                    'mtime') == mtime:
+                continue
+            backlog.append((path, size, mtime))
+
+        self.log.info(f'Found {len(backlog)} files to copy.')
+        copied_ok = set()
+        for path, size, mtime in backlog:
+            newName = f'{uuid4()}{os.path.splitext(path)[1]}'
+            if self.copyfile(path, f'{self.localPath}/{newName}'):
+                resent = self.state['files'].get(path) is not None
+                self.state['files'][path] = {
+                    'size': size,
+                    'mtime': mtime,
+                    'dest': newName
+                }
+                self.saveState()
+                copied_ok.add(path)
+                self.log.info(
+                    f'File "{newName} << {path}" copied to local folder'
+                    f'{" (re-sent, content changed)" if resent else ""}.')
+            else:
+                self.log.error(f"File '{path}' not copied to local folder.")
+        self.remoteList = [p for (p, _, _) in backlog if p not in copied_ok]
+
+        if found:
+            self.timeStamp = max(mtime for _, mtime in found.values())
             self.config.timeStamp = self.timeStamp
             self.config.save()
-            self.saveQueue()
 
-    def scandir(self, path: str):
+    def scandir(self, path: str, found: dict):
         try:
             with os.scandir(path) as scanDir:
                 for entry in scanDir:
-                    if entry.is_dir(follow_symlinks=False):
-                        self.scandir(entry.path)
-                    elif entry.is_file(
-                            follow_symlinks=False) and entry.name.endswith(
-                                self.extensionFile) and (entry.stat().st_ctime
-                                                         > self.timeStamp):
-                        self.remoteList.append(
-                            (entry.stat().st_ctime, entry.path))
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            self.scandir(entry.path, found)
+                        elif entry.is_file(
+                                follow_symlinks=False
+                        ) and entry.name.endswith(self.extensionFile):
+                            stat = entry.stat()
+                            found[entry.path] = (stat.st_size,
+                                                 stat.st_mtime)
+                    except OSError as exc:
+                        self.log.error(
+                            f"Entry '{entry.path}' scan error: {exc}")
         except Exception as exc:
             self.log.error(f"Directory '{path}' scan error: {exc}")
 
@@ -194,11 +227,11 @@ class CopyUtility():
             shutil.copy2(path, filename)
             return True
         except Exception as exc:
-            print(f'[RTLC]: {exc}')
+            self.log.error(f'Copy "{path}" -> "{filename}" failed: {exc}')
             return False
 
     def timeout(self):
-        sleep(self.refreshTime)
+        time.sleep(self.refreshTime)
 
     def exit(self):
         sys.exit()
