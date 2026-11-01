@@ -98,6 +98,12 @@ class CopyUtility():
                 notPath = True
             if notPath:
                 self.exit()
+            if self.pathContains(self.remotePath, self.localPath):
+                self.log.error(
+                    f'Local folder "{self.localPath}" is the remote folder or inside it: '
+                    'the service would copy its own output forever. Refusing to start.'
+                )
+                self.exit()
 
         self.timeStamp = self.config.timeStamp
 
@@ -144,6 +150,16 @@ class CopyUtility():
         self.cleanupStaleParts()
         atexit.register(self.end)
         self.log.info('Service started.')
+
+    @staticmethod
+    def pathContains(parent, child) -> bool:
+        try:
+            parent = os.path.realpath(parent)
+            child = os.path.realpath(child)
+            return parent == child or os.path.commonpath(
+                (parent, child)) == parent
+        except ValueError:
+            return False
 
     def loadState(self):
         self.state = {'files': {}}
