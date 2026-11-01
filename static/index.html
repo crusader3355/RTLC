@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTLC — Remote To Local Copy</title>
+<style>
+:root{--bg:#0f141a;--panel:#1a2230;--border:#2a3546;--fg:#dbe4ee;--dim:#8494a7;--ok:#3fb96c;--bad:#e05555;--warn:#e0a63f;--acc:#4f9cf0}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 "Segoe UI",system-ui,sans-serif;padding:16px;max-width:1100px;margin:0 auto}
+h1{font-size:18px;display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.badge{padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600}
+.badge.running{background:#123b24;color:var(--ok)}
+.badge.stopped{background:#3b1212;color:var(--bad)}
+.badge.unknown{background:#333;color:var(--dim)}
+.tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.tabs button{background:var(--panel);border:1px solid var(--border);color:var(--dim);padding:7px 16px;border-radius:6px;cursor:pointer}
+.tabs button.active{color:var(--fg);border-color:var(--acc)}
+.tab{display:none}.tab.active{display:block}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.card .v{font-size:20px;font-weight:600}.card .k{color:var(--dim);font-size:12px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px}
+button.act{background:var(--acc);border:0;color:#fff;padding:7px 14px;border-radius:6px;cursor:pointer;margin-right:6px}
+button.act.sec{background:#2a3546}
+button:disabled{opacity:.5;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px}
+th{color:var(--dim);font-weight:600}
+pre{background:#0a0e13;border:1px solid var(--border);border-radius:8px;padding:10px;height:480px;overflow:auto;font:12px/1.4 Consolas,monospace;white-space:pre-wrap}
+label{display:block;color:var(--dim);font-size:12px;margin:8px 0 3px}
+input,select{width:100%;background:#0a0e13;border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:7px 9px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+#keyOverlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:10}
+#keyOverlay .panel{width:420px}
+.err{color:var(--bad)}.ok{color:var(--ok)}.dim{color:var(--dim)}
+#toast{position:fixed;bottom:16px;right:16px;background:var(--panel);border:1px solid var(--acc);border-radius:8px;padding:10px 16px;display:none;z-index:20}
+</style>
+</head>
+<body>
+<h1>RTLC <span id="engineBadge" class="badge unknown">…</span>
+    <span class="dim" style="font-weight:400;font-size:13px">Remote To Local Copy</span></h1>
+
+<div id="keyOverlay"><div class="panel">
+  <b>API-ключ веб-интерфейса</b>
+  <p class="dim" style="margin:6px 0">Ключ хранится в config.ini ([Web] api_key). Сохраняется в localStorage браузера.</p>
+  <input id="keyInput" type="password" placeholder="X-API-Key">
+  <div style="margin-top:10px"><button class="act" onclick="saveKey()">Сохранить</button></div>
+  <div id="keyErr" class="err" style="margin-top:8px"></div>
+</div></div>
+
+<div class="tabs">
+  <button data-tab="status" class="active" onclick="showTab('status')">Статус</button>
+  <button data-tab="files" onclick="showTab('files')">Файлы</button>
+  <button data-tab="log" onclick="showTab('log')">Лог</button>
+  <button data-tab="settings" onclick="showTab('settings')">Настройки</button>
+</div>
+
+<div id="tab-status" class="tab active">
+  <div class="cards">
+    <div class="card"><div class="v" id="cBacklog">–</div><div class="k">В бэклоге</div></div>
+    <div class="card"><div class="v" id="cStab">–</div><div class="k">Стабилизируются</div></div>
+    <div class="card"><div class="v" id="cCopied">–</div><div class="k">Скопировано</div></div>
+    <div class="card"><div class="v" id="cFailed">–</div><div class="k">Ошибок</div></div>
+    <div class="card"><div class="v" id="cCycles">–</div><div class="k">Циклов</div></div>
+    <div class="card"><div class="v" id="cLedger">–</div><div class="k">В журнале</div></div>
+    <div class="card"><div class="v" id="cLastCycle" style="font-size:14px">–</div><div class="k">Последний цикл</div></div>
+    <div class="card"><div class="v" id="cUptime" style="font-size:14px">–</div><div class="k">Аптайм движка</div></div>
+  </div>
+  <div class="panel">
+    <div id="paths" class="dim" style="margin-bottom:10px"></div>
+    <div id="startErr" class="err" style="margin-bottom:8px"></div>
+    <button class="act" onclick="control('scan_now')">Сканировать сейчас</button>
+    <button class="act sec" onclick="control('start')">Запустить</button>
+    <button class="act sec" onclick="control('stop')">Остановить</button>
+    <button class="act sec" onclick="control('restart')">Перезапустить</button>
+  </div>
+  <div class="panel"><b>Последние скопированные</b>
+    <table id="recent"><thead><tr><th>Время</th><th>Источник</th><th>Копия</th><th>Размер</th><th>Сек</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<div id="tab-files" class="tab">
+  <div class="panel"><b>Журнал скопированных</b> <span class="dim" id="ledgerTotal"></span>
+    <table id="ledger"><thead><tr><th>Скопирован</th><th>Источник</th><th>Копия</th><th>Размер</th></tr></thead><tbody></tbody></table>
+    <div style="margin-top:8px"><button class="act sec" onclick="loadLedger()">Обновить</button></div>
+  </div>
+</div>
+
+<div id="tab-log" class="tab">
+  <div class="panel">
+    <button class="act sec" onclick="loadLog()">Обновить</button>
+    <label style="display:inline-block;margin-left:10px"><input type="checkbox" id="logAuto" checked style="width:auto"> авто</label>
+    <pre id="logView" style="margin-top:10px"></pre>
+  </div>
+</div>
+
+<div id="tab-settings" class="tab">
+  <div class="panel"><b>Настройки</b> <span class="dim">(после сохранения движок перезапускается)</span>
+    <div class="grid2" id="cfgForm"></div>
+    <div style="margin-top:14px"><button class="act" onclick="saveConfig()">Сохранить</button>
+    <span id="cfgMsg" style="margin-left:10px"></span></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script>
+const $=id=>document.getElementById(id);
+let cfgFields=[
+ ['remote','Источник (remote)'],['local','Назначение (local)'],
+ ['extension_file','Фильтр расширений'],['refresh_time','Интервал сканирования, с'],
+ ['stabilize_time','Окно стабилизации, с'],['start_date','Стартовая дата'],
+ ['last_file','Watermark (last_file)'],['use_network_share','SMB-шара (true/false)'],
+ ['share_ip','SMB: IP'],['share_name','SMB: шара'],
+ ['user_name','SMB: пользователь'],['user_password','SMB: пароль'],
+ ['client_machine_name','SMB: имя клиента'],['remote_machine_name','SMB: имя сервера'],
+ ['logs_level','Уровень логов'],['logs_size','Размер лога, МБ'],['logs_backups','Бэкапов логов'],
+ ['web_host','Web: host'],['web_port','Web: порт'],['web_trust_loopback','Web: trust loopback'],['web_api_key','Web: API-ключ']];
+
+function apiKey(){return localStorage.getItem('rtlc_api_key')||''}
+async function api(path,opt={}){
+  opt.headers=Object.assign({'X-API-Key':apiKey()},opt.headers||{});
+  if(opt.body)opt.headers['Content-Type']='application/json';
+  const r=await fetch(path,opt);
+  if(r.status===401||r.status===403){$('keyOverlay').style.display='flex';throw new Error('auth');}
+  return r;
+}
+function saveKey(){localStorage.setItem('rtlc_api_key',$('keyInput').value);$('keyOverlay').style.display='none';refresh();}
+function toast(msg,bad){const t=$('toast');t.textContent=msg;t.style.borderColor=bad?'var(--bad)':'var(--acc)';t.style.display='block';setTimeout(()=>t.style.display='none',3500);}
+function fmtTime(ts){return ts?new Date(ts*1000).toLocaleString('ru-RU'):'–'}
+function fmtDur(s){if(!s)return'–';const m=Math.floor(s/60),h=Math.floor(m/60);return h?`${h}ч ${m%60}м`:(m?`${m}м ${Math.floor(s%60)}с`:`${Math.floor(s)}с`)}
+function fmtSize(b){if(b==null)return'–';const u=['Б','КБ','МБ','ГБ'];let i=0;while(b>=1024&&i<3){b/=1024;i++}return b.toFixed(i?1:0)+' '+u[i]}
+
+function showTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+  $('tab-'+name).classList.add('active');
+  document.querySelector(`.tabs button[data-tab="${name}"]`).classList.add('active');
+  if(name==='files')loadLedger(); if(name==='log')loadLog(); if(name==='settings')loadConfig();
+}
+
+function renderStatus(s){
+  const b=$('engineBadge');
+  b.textContent=s.engine==='running'?'работает':'остановлен';
+  b.className='badge '+s.engine;
+  $('startErr').textContent=s.last_start_error?('Ошибка запуска: '+s.last_start_error):'';
+  const u=s.utility;
+  if(!u){['cBacklog','cStab','cCopied','cFailed','cCycles','cLedger','cLastCycle','cUptime'].forEach(id=>$(id).textContent='–');$('paths').textContent='';return;}
+  $('cBacklog').textContent=u.backlog; $('cStab').textContent=u.stabilizing;
+  $('cCopied').textContent=u.stats.copied; $('cFailed').textContent=u.stats.failed;
+  $('cCycles').textContent=u.stats.cycles; $('cLedger').textContent=u.ledgerSize;
+  $('cLastCycle').textContent=fmtTime(u.stats.last_cycle_at);
+  $('cUptime').textContent=fmtDur(Date.now()/1000-u.stats.started_at);
+  $('paths').textContent=`${u.remotePath} → ${u.localPath} | фильтр: ${u.extensionFile.join(', ')||'(все)'} | scan ${u.refreshTime}с | stab ${u.stabilizeTime}с`;
+  const tb=$('recent').querySelector('tbody'); tb.innerHTML='';
+  for(const r of u.recent){
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${fmtTime(r.copied_at)}</td><td title="${r.src}">${r.src}</td><td>${r.dest}</td><td>${fmtSize(r.size)}</td><td>${r.duration}</td>`;
+    tb.appendChild(tr);
+  }
+  if(u.stats.last_error)toast('Ошибка цикла: '+u.stats.last_error,true);
+}
+
+async function refresh(){try{const r=await api('/api/v1/status');renderStatus(await r.json());}catch(e){if(e.message!=='auth')console.warn(e);}}
+async function control(action){
+  try{const r=await api('/api/v1/control/'+action,{method:'POST'});
+    if(r.ok){renderStatus(await r.json());}else{const d=await r.json();toast(d.detail||'Ошибка',true);}
+  }catch(e){if(e.message!=='auth')toast(String(e),true);}
+}
+async function loadLedger(){
+  try{const r=await api('/api/v1/ledger?limit=300');const d=await r.json();
+    $('ledgerTotal').textContent=`— всего записей: ${d.total}`;
+    const tb=$('ledger').querySelector('tbody');tb.innerHTML='';
+    for(const it of d.items){const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${fmtTime(it.copied_at)}</td><td title="${it.path}">${it.path}</td><td>${it.dest||''}</td><td>${fmtSize(it.size)}</td>`;
+      tb.appendChild(tr);}
+  }catch(e){if(e.message!=='auth')toast(String(e),true);}
+}
+async function loadLog(){
+  try{const r=await api('/api/v1/log?lines=400');const d=await r.json();
+    const v=$('logView');v.textContent=d.lines.join('\n')||'(лог пуст)';v.scrollTop=v.scrollHeight;
+  }catch(e){if(e.message!=='auth')console.warn(e);}
+}
+async function loadConfig(){
+  try{const r=await api('/api/v1/config');const cfg=await r.json();
+    const f=$('cfgForm');f.innerHTML='';
+    for(const[key,label]of cfgFields){
+      const div=document.createElement('div');
+      const val=cfg[key]!==undefined?cfg[key]:'';
+      div.innerHTML=`<label>${label} <span class="dim">[${key}]</span></label><input data-key="${key}" value="${val===null?'':val}">`;
+      f.appendChild(div);}
+  }catch(e){if(e.message!=='auth')toast(String(e),true);}
+}
+async function saveConfig(){
+  const body={};
+  document.querySelectorAll('#cfgForm input').forEach(i=>body[i.dataset.key]=i.value);
+  try{const r=await api('/api/v1/config',{method:'PUT',body:JSON.stringify(body)});
+    const d=await r.json();
+    if(r.ok){$('cfgMsg').innerHTML='<span class="ok">Сохранено, движок: '+d.engine+'</span>';refresh();}
+    else{$('cfgMsg').innerHTML='<span class="err">'+(d.detail||'Ошибка')+'</span>';}
+  }catch(e){if(e.message!=='auth')$('cfgMsg').innerHTML='<span class="err">'+e+'</span>';}
+}
+
+// WebSocket с откатом на polling
+let polled=false;
+function startPolling(){if(polled)return;polled=true;setInterval(refresh,3000);refresh();}
+function connectWs(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  try{const ws=new WebSocket(`${proto}://${location.host}/ws?api_key=${encodeURIComponent(apiKey())}`);
+    ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='status_update')renderStatus(m.data);};
+    ws.onclose=()=>{startPolling();setTimeout(connectWs,5000);};
+    ws.onerror=()=>ws.close();
+  }catch(e){startPolling();}
+}
+setInterval(()=>{if($('tab-log').classList.contains('active')&&$('logAuto').checked)loadLog();},3000);
+connectWs();startPolling();
+</script>
+</body>
+</html>

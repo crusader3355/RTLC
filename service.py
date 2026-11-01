@@ -66,13 +66,7 @@ class MyService:
         #rtlc = CopyUtility()
 
         self.rtlc = CopyUtilityNetShare()
-
-        while not self.rtlc.stop_event.is_set():
-            try:
-                self.rtlc.walker()
-            except Exception:
-                self.rtlc.log.exception('Unhandled error in walker(), continuing.')
-            self.rtlc.timeout()
+        self.rtlc.run_forever()
 
 
 class MyServiceFramework(win32serviceutil.ServiceFramework):

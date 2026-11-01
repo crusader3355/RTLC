@@ -1,5 +1,6 @@
 #Remote To Local Copy(RTLC)
 import atexit
+import collections
 import json
 import logging
 import logging.handlers
@@ -150,6 +151,16 @@ class CopyUtility():
         self.remoteList = []
         self.pending = {}
         self.stop_event = threading.Event()
+        self._cycle_lock = threading.Lock()
+        self.stats = {
+            'cycles': 0,
+            'copied': 0,
+            'failed': 0,
+            'last_cycle_at': None,
+            'last_error': None,
+            'started_at': time.time()
+        }
+        self.recent = collections.deque(maxlen=50)
         self.cleanupStaleParts()
         atexit.register(self.end)
         self.log.info('Service started.')
@@ -235,20 +246,35 @@ class CopyUtility():
             started = time.time()
             if self.copyfile(path, f'{self.localPath}/{newName}'):
                 resent = self.state['files'].get(path) is not None
+                copied_at = time.time()
                 self.state['files'][path] = {
                     'size': size,
                     'mtime': mtime,
-                    'dest': newName
+                    'dest': newName,
+                    'copied_at': copied_at
                 }
                 self.saveState()
                 copied_ok.add(path)
+                duration = copied_at - started
+                self.recent.appendleft({
+                    'src': path,
+                    'dest': newName,
+                    'size': size,
+                    'duration': round(duration, 3),
+                    'copied_at': copied_at,
+                    'resent': resent
+                })
                 self.log.info(
                     f'File "{newName} << {path}" copied to local folder: '
-                    f'{size} bytes in {time.time() - started:.2f}s'
+                    f'{size} bytes in {duration:.2f}s'
                     f'{" (re-sent, content changed)" if resent else ""}.')
             else:
                 self.log.error(f"File '{path}' not copied to local folder.")
         self.remoteList = [p for (p, _, _) in backlog if p not in copied_ok]
+        self.stats['cycles'] += 1
+        self.stats['copied'] += len(copied_ok)
+        self.stats['failed'] += len(ready) - len(copied_ok)
+        self.stats['last_cycle_at'] = time.time()
         self.log.info(
             f'Cycle done: {len(found)} found, {len(backlog)} to copy, '
             f'{len(copied_ok)} copied, {len(self.remoteList)} in backlog.')
@@ -318,6 +344,36 @@ class CopyUtility():
     def timeout(self):
         self.stop_event.wait(self.refreshTime)
 
+    def walk_cycle(self):
+        # Один цикл сканирования/копирования; блокировка не пускает
+        # параллельный "сканировать сейчас" из веб-интерфейса.
+        with self._cycle_lock:
+            self.walker()
+
+    def run_forever(self):
+        while not self.stop_event.is_set():
+            try:
+                self.walk_cycle()
+            except Exception as exc:
+                self.stats['last_error'] = f'{type(exc).__name__}: {exc}'
+                self.log.exception('Unhandled error in walker(), continuing.')
+            self.timeout()
+
+    def status(self) -> dict:
+        return {
+            'remotePath': self.remotePath,
+            'localPath': self.localPath,
+            'refreshTime': self.refreshTime,
+            'stabilizeTime': self.stabilizeTime,
+            'extensionFile': [e for e in self.extensionFile if e],
+            'useNetShare': self.config.useNetShare,
+            'backlog': len(self.remoteList),
+            'stabilizing': len(self.pending),
+            'ledgerSize': len(self.state['files']),
+            'stats': dict(self.stats),
+            'recent': list(self.recent)
+        }
+
     def exit(self):
         sys.exit()
 
@@ -327,9 +383,4 @@ class CopyUtility():
 
 if __name__ == '__main__':
     rtlc = CopyUtility()
-    while not rtlc.stop_event.is_set():
-        try:
-            rtlc.walker()
-        except Exception:
-            rtlc.log.exception('Unhandled error in walker(), continuing.')
-        rtlc.timeout()
+    rtlc.run_forever()

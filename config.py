@@ -24,6 +24,10 @@ class Config:
         self.logsLevel: str = 'INFO'
         self.logsSize: int = 2
         self.logsBackups: int = 5
+        self.webHost: str = '127.0.0.1'
+        self.webPort: int = 8765
+        self.webApiKey: str = ''
+        self.webTrustLoopback: bool = True
 
     def getstring(self, section, option, fallback):
         string = self.config.get(section, option, fallback=fallback)
@@ -99,6 +103,13 @@ class Config:
         self.logsBackups = self.getint('Logs',
                                        'backups',
                                        fallback=self.logsBackups)
+        self.webHost = self.getstring('Web', 'host', fallback=self.webHost)
+        self.webPort = self.getint('Web', 'port', fallback=self.webPort)
+        self.webApiKey = self.getstring('Web',
+                                        'api_key',
+                                        fallback=self.webApiKey)
+        self.webTrustLoopback = self.getboolean(
+            'Web', 'trust_loopback', fallback=self.webTrustLoopback)
 
     def save(self) -> str:
         self.config['Options'] = {
@@ -125,6 +136,12 @@ class Config:
             'level': self.logsLevel,
             'size': self.logsSize,
             'backups': self.logsBackups
+        }
+        self.config['Web'] = {
+            'host': self.webHost,
+            'port': self.webPort,
+            'api_key': self.webApiKey,
+            'trust_loopback': self.webTrustLoopback
         }
         try:
             tmp = f'{self.ini}.tmp'

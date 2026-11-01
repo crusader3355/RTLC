@@ -259,3 +259,32 @@ python -m pytest tests/ -v
 5): файл копируется только после окна тишины такой длины. Состояние —
 `rtlc.state.json` рядом с приложением; удаление файла состояния приведёт
 к повторному копированию (без потерь).
+
+## 9. Веб-интерфейс (webui.py, по аналогии с cdcm2pacs)
+
+`python webui.py` поднимает FastAPI + uvicorn (по умолчанию
+`http://127.0.0.1:8765/`): движок копирования работает в фоновом потоке,
+все настройки и статус — через браузер (`static/index.html`, без сборки).
+
+- **API**: `GET /api/v1/status`, `POST /api/v1/control/{start|stop|restart|scan_now}`,
+  `GET/PUT /api/v1/config` (секреты маскируются `***`, петля путей
+  отклоняется до записи), `GET /api/v1/ledger` (журнал копий, работает и
+  при остановленном движке — читает state с диска), `GET /api/v1/log`,
+  `GET /health`, WebSocket `/ws` (push статуса, UI откатывается на polling).
+- **Безопасность** (идиома cdcm2pacs): `X-API-Key` (генерируется при
+  первом запуске в `[Web] api_key`), trusted-loopback без ключа
+  (клиент + Host — loopback, защита от DNS rebinding), rate limit
+  600 req/min для сетевых клиентов, host по умолчанию 127.0.0.1.
+- **Движок**: `CopyUtility.run_forever()` (общий цикл для CLI, службы и
+  GUI), метрики `stats` (циклы/скопировано/ошибки/последний цикл),
+  deque последних 50 копий, `status()` — снимок для API. В ledger
+  добавлено поле `copied_at`.
+- **Тесты**: `tests/test_webui.py` (8 штук, TestClient): auth 401/403/200,
+  маскировка секретов, валидация и отказ петли в PUT, полный цикл
+  «старт → файл скопирован → стоп» через HTTP, ledger с диска, хвост лога.
+- **Smoke-проверка на живом сервере**: uvicorn на 127.0.0.1:8765, файл
+  `.dcm` скопирован движком и подтверждён побайтово через
+  `/api/v1/status` + `/api/v1/ledger`, control stop/start по HTTP.
+- Зависимости: `requirements.txt` (fastapi, uvicorn), dev —
+  `requirements-dev.txt` (+pytest, httpx). Для GUI нужен Python 3.10+
+  (ядро rtlc.py остаётся совместимым с более старыми версиями).

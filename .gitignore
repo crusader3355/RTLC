@@ -6,3 +6,7 @@ config.ini
 dist/config.ini
 /logs
 dist/logs/
+.venv/
+rtlc.state.json
+rtlc.state.json.tmp
+config.ini.tmp
