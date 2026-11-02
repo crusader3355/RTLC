@@ -37,6 +37,7 @@ EDITABLE = {
     'local': ('localPath', str),
     'use_network_share': ('useNetShare', bool),
     'share_ip': ('shareIP', str),
+    'share_port': ('sharePort', int),
     'share_name': ('shareName', str),
     'user_name': ('userName', str),
     'user_password': ('userPassword', 'secret'),
@@ -224,6 +225,8 @@ def _validate(key, value):
         raise HTTPException(400, 'web_port must be in 1..65535')
     if key == 'dicom_port' and not 1 <= value <= 65535:
         raise HTTPException(400, 'dicom_port must be in 1..65535')
+    if key == 'share_port' and not 1 <= value <= 65535:
+        raise HTTPException(400, 'share_port must be in 1..65535')
     if key == 'dicom_timeout' and value < 1:
         raise HTTPException(400, 'dicom_timeout must be >= 1')
     if key in ('dicom_called_aet', 'dicom_calling_aet') and (

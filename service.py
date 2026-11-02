@@ -4,48 +4,34 @@ import win32serviceutil  # ServiceFramework and commandline helper
 import win32service  # Events
 import servicemanager  # Simple setup and logging
 
-from rtlc import CopyUtility, getLenSysArg
-from smbclient import SmbClient
+from rtlc import CopyUtility, TEMP_PREFIX, getLenSysArg
+from smb_client import SmbClient
 
 
 class CopyUtilityNetShare(CopyUtility):
 
     def __init__(self):
         super().__init__()
-        if not os.path.exists(self.localPath):
+        if self.toFolder and not os.path.exists(self.localPath):
             self.log.error(f'Local folder: "{self.localPath}" not found.')
             self.exit()
-        self.shareIP = self.config.shareIP
-        self.shareName = self.config.shareName
-        self.server = self.createConnection()
+        self.smb = SmbClient(self.config.shareIP, self.config.shareName,
+                             self.config.userName, self.config.userPassword,
+                             self.config.sharePort)
+        self.smb.log = self.log
         if not self.connect():
             self.exit()
 
-    def createConnection(self):
-        return SmbClient.create(self.config.userName,
-                                self.config.userPassword,
-                                self.config.clientMachineName,
-                                self.config.remoteMachineName)
-
     def connect(self):
-        connect, msg = SmbClient.connect(self)
-        if connect:
-            self.log.info(msg)
-            return True
-        self.log.error(msg)
-        return False
+        ok, msg = self.smb.connect()
+        (self.log.info if ok else self.log.error)(msg)
+        return ok
 
     def reconnect(self):
-        self.log.info('Reconnecting to the share...')
-        try:
-            self.server = self.createConnection()
-        except Exception as exc:
-            self.log.error(f'Reconnect failed: {exc}')
-            return
-        self.connect()
+        self.smb.reconnect()
 
     def _retrieve(self, path, tmp):
-        SmbClient.retrieve(self, path, tmp)
+        self.smb.retrieve(path, tmp)
 
     def _localSource(self, path):
         # Источник на SMB-шаре: материализуем во временный локальный файл
@@ -71,7 +57,11 @@ class CopyUtilityNetShare(CopyUtility):
         return tmp, cleanup
 
     def scandir(self, path, found):
-        SmbClient.scandir(self, path, found)
+        self.smb.scandir(path, found, self._acceptName)
+
+    def _acceptName(self, name):
+        return (not name.startswith(TEMP_PREFIX)
+                and name.lower().endswith(self.extensionFile))
 
 
 class MyService:

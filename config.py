@@ -16,6 +16,7 @@ class Config:
         self.localPath: str = './local'
         self.useNetShare: bool = False
         self.shareIP: str = ''
+        self.sharePort: int = 445
         self.shareName: str = ''
         self.userName: str = ''
         self.userPassword: str = ''
@@ -90,6 +91,9 @@ class Config:
         self.shareIP = self.getstring('NetShare',
                                       'share_ip',
                                       fallback=self.shareIP)
+        self.sharePort = self.getint('NetShare',
+                                     'share_port',
+                                     fallback=self.sharePort)
         self.shareName = self.getstring('NetShare',
                                         'share_name',
                                         fallback=self.shareName)
@@ -152,6 +156,7 @@ class Config:
         self.config['NetShare'] = {
             'use_network_share': self.useNetShare,
             'share_ip': self.shareIP,
+            'share_port': self.sharePort,
             'share_name': self.shareName,
             'user_name': self.userName,
             'user_password': self.userPassword,
