@@ -112,7 +112,7 @@ input,select{width:100%;background:#0a0e13;border:1px solid var(--border);color:
 const $=id=>document.getElementById(id);
 let cfgFields=[
  ['remote','Источник (remote)'],['local','Назначение (local)'],
- ['extension_file','Фильтр расширений'],['refresh_time','Интервал сканирования, с'],
+ ['extension_file','Фильтр расширений (.[empty] — без расширения)'],['refresh_time','Интервал сканирования, с'],
  ['stabilize_time','Окно стабилизации, с'],['start_date','Стартовая дата'],
  ['last_file','Watermark (last_file)'],['use_network_share','SMB-шара (true/false)'],
  ['share_ip','SMB: IP'],['share_port','SMB: порт (445/139)'],['share_name','SMB: шара'],
@@ -161,7 +161,9 @@ function renderStatus(s){
   $('cLastCycle').textContent=fmtTime(u.stats.last_cycle_at);
   $('cUptime').textContent=fmtDur(Date.now()/1000-u.stats.started_at);
   const d=u.delivery||{};
-  $('paths').textContent=`${u.remotePath} → ${d.toFolder?u.localPath:''}${d.toFolder&&d.toDicom?' + ':''}${d.toDicom?('DICOM '+d.dicomNode):''} | фильтр: ${u.extensionFile.join(', ')||'(все)'} | scan ${u.refreshTime}с | stab ${u.stabilizeTime}с`;
+  const extList=u.extensionFile.join(', ')+(u.extensionNoExt?', + без расширения':'');
+  const extFilter=extList||(u.extensionNoExt?'только без расширения':'(все)');
+  $('paths').textContent=`${u.remotePath} → ${d.toFolder?u.localPath:''}${d.toFolder&&d.toDicom?' + ':''}${d.toDicom?('DICOM '+d.dicomNode):''} | фильтр: ${extFilter} | scan ${u.refreshTime}с | stab ${u.stabilizeTime}с`;
   const tb=$('recent').querySelector('tbody'); tb.innerHTML='';
   for(const r of u.recent){
     const tr=document.createElement('tr');

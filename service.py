@@ -4,7 +4,7 @@ import win32serviceutil  # ServiceFramework and commandline helper
 import win32service  # Events
 import servicemanager  # Simple setup and logging
 
-from rtlc import CopyUtility, TEMP_PREFIX, getLenSysArg
+from rtlc import CopyUtility, getLenSysArg
 from smb_client import SmbClient
 
 
@@ -60,8 +60,7 @@ class CopyUtilityNetShare(CopyUtility):
         self.smb.scandir(path, found, self._acceptName)
 
     def _acceptName(self, name):
-        return (not name.startswith(TEMP_PREFIX)
-                and name.lower().endswith(self.extensionFile))
+        return self.matchName(name)
 
 
 class MyService:

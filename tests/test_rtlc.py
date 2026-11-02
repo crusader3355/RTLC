@@ -255,6 +255,44 @@ def test_no_extension_with_empty_filter(paths, make_rtlc):
     assert data in local_contents(paths['local'])
 
 
+# --- Маркер '.[empty]': файлы без расширения в фильтре ---------------------
+
+def test_empty_marker_matches_extensionless(paths, make_rtlc):
+    inst = make_rtlc(extension_file='.dcm,.[empty]')
+    dcm = write_dicom(os.path.join(paths['remote'], 'a.dcm'), 2048, seed=1)
+    noext = write_dicom(os.path.join(paths['remote'], 'IMG001'), 2048, seed=2)
+    write_dicom(os.path.join(paths['remote'], 'b.bin'), 2048, seed=3)
+
+    run_until_copied(inst, paths['local'], want=2, timeout=5)
+    contents = local_contents(paths['local'])
+    assert dcm in contents, '.dcm не скопирован при фильтре .dcm,.[empty]'
+    assert noext in contents, ('файл без расширения не скопирован '
+                               'при фильтре .dcm,.[empty]')
+    assert len(contents) == 2, 'файл с чужим расширением прошёл фильтр'
+
+
+def test_empty_marker_alone(paths, make_rtlc):
+    inst = make_rtlc(extension_file='.[empty]')
+    noext = write_dicom(os.path.join(paths['remote'], 'IMG001'), 2048, seed=1)
+    write_dicom(os.path.join(paths['remote'], 'a.dcm'), 2048, seed=2)
+
+    run_until_copied(inst, paths['local'], want=1, timeout=5)
+    contents = local_contents(paths['local'])
+    assert noext in contents
+    assert len(contents) == 1, 'при фильтре .[empty] скопировался файл с расширением'
+
+
+def test_plain_filter_rejects_extensionless(paths, make_rtlc):
+    inst = make_rtlc(extension_file='.dcm')  # без маркера — регрессия
+    dcm = write_dicom(os.path.join(paths['remote'], 'a.dcm'), 2048, seed=1)
+    write_dicom(os.path.join(paths['remote'], 'IMG001'), 2048, seed=2)
+
+    run_until_copied(inst, paths['local'], want=1, timeout=5)
+    contents = local_contents(paths['local'])
+    assert dcm in contents
+    assert len(contents) == 1, 'файл без расширения прошёл фильтр .dcm'
+
+
 # --- Сценарий 9: битый/нулевой файл — очередь живёт ----------------------
 
 def test_zero_size_and_locked_file_queue_survives(paths, make_rtlc):

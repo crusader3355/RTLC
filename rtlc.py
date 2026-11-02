@@ -30,6 +30,24 @@ def getLenSysArg() -> int:
     return len(sys.argv)
 
 
+def parseExtensions(raw: str):
+    """Парсинг фильтра расширений: '.dcm,.bin,.[empty]'.
+
+    '.[empty]' — файлы без расширения. Пустой фильтр — принимать всё
+    (обратная совместимость). Возвращает (tuple расширений, allow_no_ext)."""
+    exts, allow_no_ext = [], False
+    for ext in raw.replace(' ', '').lower().split(','):
+        if not ext:
+            continue
+        if ext == '.[empty]':
+            allow_no_ext = True
+        else:
+            exts.append(ext)
+    if not exts and not allow_no_ext:
+        exts = ['']  # пустой фильтр принимает любое имя (endswith(''))
+    return tuple(exts), allow_no_ext
+
+
 class CopyUtility():
 
     def __init__(self):
@@ -153,9 +171,8 @@ class CopyUtility():
 
         self.refreshTime = self.config.refreshTime
         self.stabilizeTime = self.config.stabilizeTime
-        self.extensionFile = tuple(
-            ext.lower()
-            for ext in self.config.extensionFile.replace(' ', '').split(','))
+        self.extensionFile, self.allowNoExt = parseExtensions(
+            self.config.extensionFile)
 
         self.log.info(f'    Logs level: {self.config.logsLevel}')
         self.log.info(f'    Remote folder: "{self.remotePath}"')
@@ -301,6 +318,15 @@ class CopyUtility():
             self.config.timeStamp = self.timeStamp
             self.config.save()
 
+    def matchName(self, name: str) -> bool:
+        """Фильтр имён: temp-файлы пропускаем; далее по расширениям,
+        при маркере '.[empty]' — и файлы без расширения."""
+        if name.startswith(TEMP_PREFIX):
+            return False
+        if name.lower().endswith(self.extensionFile):
+            return True
+        return self.allowNoExt and os.path.splitext(name)[1] == ''
+
     def scandir(self, path: str, found: dict):
         try:
             with os.scandir(path) as scanDir:
@@ -310,9 +336,7 @@ class CopyUtility():
                             self.scandir(entry.path, found)
                         elif entry.is_file(
                                 follow_symlinks=False
-                        ) and not entry.name.startswith(
-                                TEMP_PREFIX) and entry.name.lower().endswith(
-                                self.extensionFile):
+                        ) and self.matchName(entry.name):
                             stat = entry.stat()
                             found[entry.path] = (stat.st_size,
                                                  stat.st_mtime)
@@ -503,6 +527,7 @@ class CopyUtility():
             'refreshTime': self.refreshTime,
             'stabilizeTime': self.stabilizeTime,
             'extensionFile': [e for e in self.extensionFile if e],
+            'extensionNoExt': self.allowNoExt,
             'useNetShare': self.config.useNetShare,
             'delivery': {
                 'toFolder': self.toFolder,
