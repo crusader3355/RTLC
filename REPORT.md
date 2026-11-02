@@ -15,7 +15,7 @@
 │ rtlc.py (CopyUtility)          — локальный режим                 │
 │ service.py (CopyUtilityNetShare + MyServiceFramework)            │
 │                                — служба Windows (pywin32) + SMB  │
-│ smbclient.py (SmbClient)       — pysmb, порт 139, NTLMv2         │
+│ smb_client.py (SmbClient)      — smbprotocol, SMB2/3, порт 445   │
 │ config.py (Config)             — config.ini, watermark last_file │
 └──────────────────────────────────────────────────────────────────┘
 
@@ -230,18 +230,17 @@ watermark → обновлённое исследование **не отпра�
   меняется при перезаписи).
 - **Длинные пути (>260)** зависят от `LongPathsEnabled` в реестре целевой
   машины; на тестовой — работают.
-- **`dist/rtlc.exe` собран из старых исходников** — после мержа требуется
-  пересборка PyInstaller'ом (`rtlc.spec`).
+- `dist/rtlc.exe` пересобран PyInstaller'ом (`rtlc.spec`) после всех
+  исправлений ветки, включая SMB2/3 и DICOM-доставку.
 - **Логгер называется `'rltc'`** (опечатка) — не переименован, чтобы не
   ломать существующие разборы логов.
-- **SMB-правки не прогонялись динамически** (нет тестового SMB-сервера);
-  изменения минимальны и симметричны локальному режиму, синтаксис
-  проверен `py_compile`.
+- **SMB2/3 и служба проверены динамически** — см. §12: end-to-end прогон
+  под SCM с реальной loopback-шарой, копия побайтово идентична.
 
 ## 8. Как запустить приложение и тесты локально
 
 ```bash
-# Приложение (Python 3.8+; для SMB-режима: pip install pysmb pywin32)
+# Приложение (Python 3.10+ для GUI; для SMB-режима: pip install smbprotocol pywin32)
 mkdir remote local
 python rtlc.py          # первый запуск сгенерирует config.ini и выйдет
 # отредактировать config.ini: [Paths] remote/local, [Options] extension_file,
@@ -304,12 +303,14 @@ python -m pytest tests/ -v
 - `static/index.html` зашит в бандл (читается из _MEIPASS); config.ini,
   Logs/, rtlc.state.json — рядом с exe (запись, `getModulePath`).
 - В exe зашиты uvicorn + websockets (WS проверен в frozen-сборке),
-  pywin32 (служба), pysmb (SMB). Версионный ресурс — file_version_info.txt.
+  pywin32 (служба), smbprotocol (SMB2/3). Версионный ресурс — file_version_info.txt.
 - Проверено на изолированном стенде: первый запуск создаёт config.ini,
   статус честно показывает «настройте конфиг»; настройка через PUT,
   старт, scan_now, копия побайтово идентична; `run`-режим пишет ledger;
-  `--help` работает. Установка службы не проверялась (требует прав
-  администратора; механика pywin32 не менялась).
+  `--help` работает.
+- **Установка службы проверена end-to-end** (§12): `install/start/stop/
+  remove` под SCM с реальной loopback-шарой, доставка файла побайтово
+  идентична.
 - Пересборка: `.venv/Scripts/python.exe -m PyInstaller rtlc.spec --clean --noconfirm`.
 
 ## 11. Доставка на DICOM-узел (C-STORE SCU)
@@ -341,3 +342,41 @@ python -m pytest tests/ -v
   дубля в папке) / не-DICOM → permanent / валидации / echo up/down /
   неизменность источника.
 - Зависимости: + `pydicom`, `pynetdicom` (в requirements.txt и в exe).
+
+## 12. Миграция SMB: pysmb (SMB1) → smbprotocol (SMB2/3) + прогон службы
+
+**Почему.** pysmb говорит только SMB1 (NetBIOS, порт 139). На современной
+Windows SMB1 отключён/отвергается: подключение рвалось с
+`WinError 10054` ещё на этапе сессии — SMB-режим был фактически мёртв и
+при этом нёс риск принудительного включения SMB1 на сервере (что
+неприемлемо в медконтуре). Замена: `smbprotocol` (SMB2/3, подпись,
+шифрование по умолчанию ОС).
+
+**Что изменено:**
+- `smbclient.py` (pysmb) удалён; новый `smb_client.py` — класс `SmbClient`
+  (`register_session` / `delete_session` / `scandir` / `open_file`),
+  поверх него без изменений логики работают стабилизация, ledger,
+  temp+rename. Порт вынесен из хардкода 139 в `[NetShare] share_port`
+  (default 445, валидация в webui.py, поле в GUI).
+- **Квалификация имени пользователя**: NTLM из-под службы (LocalSystem)
+  с незквалифицированным локальным именем (`user` без домена) получает
+  `LOGON_DENIED` (WinError -2146893043) — из интерактивной сессии тот же
+  логин работает. Воспроизведено изолированно через планировщик
+  (задача от SYSTEM): `user` → FAIL, `.\user` → OK. В `SmbClient` к имени
+  без квалификатора (`\` или `@`) автоматически добавляется `.\`;
+  доменные учётки (`DOMAIN\user`, `user@domain`) не трогаются.
+  Атрибутика `.\user` под NTLM корректна и для удалённого сервера
+  (локальная учётка целевой машины).
+
+**Проверено end-to-end (стенд, синтетика, без реальных данных):**
+- Изолированный тест от SYSTEM (планировщик): connect + scandir +
+  retrieve через `SmbClient`, байты копии совпали с источником.
+- **Полный прогон службы под SCM**: созданы локальный пользователь и
+  шара на loopback → `rtlc.exe install/start` (binpath `"...\rtlc.exe"
+  service`, контекст LocalSystem) → в логе службы
+  `Authenticated to //127.0.0.1/RTLC_SVC (SMB2/3)` → файл со шары
+  скопирован после стабилизации (728 байт) → `cmp` подтвердил побайтовую
+  идентичность → `stop`/`remove`, шара и пользователь удалены.
+  Служба из одного exe: механика SCM и реальная доставка по SMB2/3
+  работают вместе.
+- Регрессия: 31/31 pytest. exe пересобран (`PyInstaller rtlc.spec`).

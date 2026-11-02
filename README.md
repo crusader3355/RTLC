@@ -21,7 +21,7 @@
            - служба Windows (SMB-режим): командная строка от имени администратора,
              'C:/rtlc/rtlc.exe install', затем 'rtlc.exe start' / 'stop' / 'remove'.
         d. Сборка exe из исходников:
-           python -m venv .venv && .venv/Scripts/pip install -r requirements.txt pyinstaller pywin32 pysmb
+           python -m venv .venv && .venv/Scripts/pip install -r requirements.txt pyinstaller pywin32
            .venv/Scripts/python.exe -m PyInstaller rtlc.spec --clean --noconfirm
            (результат: dist/rtlc.exe, режимы: gui/run/service; версия — file_version_info.txt)
     2. Install to RedOS:
@@ -51,6 +51,17 @@
         [Paths]
         1. remote - путь до удалённой папки
         2. local - путь до локальной папки
+        [NetShare] (SMB-режим, use_network_share = true)
+        1. share_ip - IP/хост SMB-сервера
+        2. share_port - порт SMB (по умолчанию 445; legacy NetBIOS 139 не поддерживается — только SMB2/3)
+        3. share_name - имя шары
+        4. user_name / user_password - учётные данные. Локальную учётку
+           можно указывать без квалификатора — при необходимости к имени
+           автоматически добавляется '.\' (без него NTLM из-под службы
+           LocalSystem получает LOGON_DENIED). Доменная учётка — 'DOMAIN\user'
+           или 'user@domain'.
+        5. client_machine_name / remote_machine_name - имена машин (сервисные)
+        Источник только читается: файлы на шаре никогда не изменяются и не удаляются.
         [Logs]
         1. level - уровень логирования
         2. size - максимальный размер файла логов (в мегабайтах)
