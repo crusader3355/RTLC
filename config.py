@@ -28,6 +28,13 @@ class Config:
         self.webPort: int = 8765
         self.webApiKey: str = ''
         self.webTrustLoopback: bool = True
+        self.toFolder: bool = True
+        self.toDicom: bool = False
+        self.dicomHost: str = ''
+        self.dicomPort: int = 104
+        self.dicomCalledAet: str = ''
+        self.dicomCallingAet: str = 'RTLC'
+        self.dicomTimeout: int = 30
 
     def getstring(self, section, option, fallback):
         string = self.config.get(section, option, fallback=fallback)
@@ -110,6 +117,25 @@ class Config:
                                         fallback=self.webApiKey)
         self.webTrustLoopback = self.getboolean(
             'Web', 'trust_loopback', fallback=self.webTrustLoopback)
+        self.toFolder = self.getboolean('Delivery',
+                                        'to_folder',
+                                        fallback=self.toFolder)
+        self.toDicom = self.getboolean('Delivery',
+                                       'to_dicom',
+                                       fallback=self.toDicom)
+        self.dicomHost = self.getstring('Dicom',
+                                        'host',
+                                        fallback=self.dicomHost)
+        self.dicomPort = self.getint('Dicom', 'port', fallback=self.dicomPort)
+        self.dicomCalledAet = self.getstring('Dicom',
+                                             'called_aet',
+                                             fallback=self.dicomCalledAet)
+        self.dicomCallingAet = self.getstring('Dicom',
+                                              'calling_aet',
+                                              fallback=self.dicomCallingAet)
+        self.dicomTimeout = self.getint('Dicom',
+                                        'timeout',
+                                        fallback=self.dicomTimeout)
 
     def save(self) -> str:
         self.config['Options'] = {
@@ -142,6 +168,17 @@ class Config:
             'port': self.webPort,
             'api_key': self.webApiKey,
             'trust_loopback': self.webTrustLoopback
+        }
+        self.config['Delivery'] = {
+            'to_folder': self.toFolder,
+            'to_dicom': self.toDicom
+        }
+        self.config['Dicom'] = {
+            'host': self.dicomHost,
+            'port': self.dicomPort,
+            'called_aet': self.dicomCalledAet,
+            'calling_aet': self.dicomCallingAet,
+            'timeout': self.dicomTimeout
         }
         try:
             tmp = f'{self.ini}.tmp'

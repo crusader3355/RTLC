@@ -49,6 +49,13 @@ EDITABLE = {
     'web_port': ('webPort', int),
     'web_trust_loopback': ('webTrustLoopback', bool),
     'web_api_key': ('webApiKey', 'secret'),
+    'to_folder': ('toFolder', bool),
+    'to_dicom': ('toDicom', bool),
+    'dicom_host': ('dicomHost', str),
+    'dicom_port': ('dicomPort', int),
+    'dicom_called_aet': ('dicomCalledAet', str),
+    'dicom_calling_aet': ('dicomCallingAet', str),
+    'dicom_timeout': ('dicomTimeout', int),
 }
 
 LOG_LEVELS = {'NOTSET', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'}
@@ -215,10 +222,17 @@ def _validate(key, value):
         raise HTTPException(400, 'stabilize_time must be >= 0')
     if key == 'web_port' and not 1 <= value <= 65535:
         raise HTTPException(400, 'web_port must be in 1..65535')
+    if key == 'dicom_port' and not 1 <= value <= 65535:
+        raise HTTPException(400, 'dicom_port must be in 1..65535')
+    if key == 'dicom_timeout' and value < 1:
+        raise HTTPException(400, 'dicom_timeout must be >= 1')
+    if key in ('dicom_called_aet', 'dicom_calling_aet') and (
+            len(value) > 16 or not value.strip() == value):
+        raise HTTPException(400, f'{key}: AE Title — до 16 символов без пробелов по краям')
     if key == 'logs_level' and value.upper() not in LOG_LEVELS:
         raise HTTPException(400, f'logs_level must be one of {sorted(LOG_LEVELS)}')
-    if key in ('remote', 'local') and not value.strip():
-        raise HTTPException(400, f'{key} path must not be empty')
+    if key == 'remote' and not value.strip():
+        raise HTTPException(400, 'remote path must not be empty')
     if key == 'web_api_key' and len(value) < 8:
         raise HTTPException(400, 'web_api_key must be at least 8 characters')
 
@@ -273,6 +287,26 @@ def create_app(engine: Engine | None = None) -> FastAPI:
             raise HTTPException(500, eng.last_start_error or 'start failed')
         return status_snapshot(app)
 
+    @app.post('/api/v1/dicom/echo')
+    async def dicom_echo(_=Depends(verify_api_key)):
+        cfg = Config('config.ini')
+        cfg.load()
+        if not cfg.toDicom:
+            raise HTTPException(409, 'DICOM delivery is disabled (to_dicom=false)')
+        try:
+            import dicom_sender
+        except ImportError as exc:
+            raise HTTPException(503, f'pynetdicom/pydicom not available: {exc}')
+
+        def _ping():
+            return dicom_sender.echo(cfg.dicomHost, cfg.dicomPort,
+                                     cfg.dicomCalledAet, cfg.dicomCallingAet,
+                                     cfg.dicomTimeout)
+
+        ok, msg = await run_in_threadpool(_ping)
+        return {'ok': ok, 'message': msg,
+                'node': f'{cfg.dicomCalledAet}@{cfg.dicomHost}:{cfg.dicomPort}'}
+
     @app.get('/api/v1/config')
     async def get_config(_=Depends(verify_api_key)):
         cfg = Config('config.ini')
@@ -308,10 +342,24 @@ def create_app(engine: Engine | None = None) -> FastAPI:
 
         remote = getattr(cfg, 'remotePath')
         local = getattr(cfg, 'localPath')
-        if not cfg.useNetShare and CopyUtility.pathContains(remote, local):
+        if not cfg.toFolder and not cfg.toDicom:
             raise HTTPException(
-                400, 'Local folder is the remote folder or inside it '
-                '(copy loop) — configuration rejected')
+                400, 'Both delivery sinks are disabled '
+                '(to_folder=false, to_dicom=false) — nothing to do')
+        if cfg.toDicom:
+            if not cfg.dicomHost.strip() or not cfg.dicomCalledAet.strip():
+                raise HTTPException(
+                    400, 'to_dicom=true требует заполненные '
+                    'dicom_host и dicom_called_aet')
+        if cfg.toFolder:
+            if not local.strip():
+                raise HTTPException(
+                    400, 'local path must not be empty when to_folder=true')
+            if not cfg.useNetShare and CopyUtility.pathContains(
+                    remote, local):
+                raise HTTPException(
+                    400, 'Local folder is the remote folder or inside it '
+                    '(copy loop) — configuration rejected')
 
         result = cfg.save()
         app.state.web_config = cfg
@@ -335,13 +383,18 @@ def create_app(engine: Engine | None = None) -> FastAPI:
                     files = json.load(f).get('files', {})
             except Exception:
                 files = {}
-        items = [{
-            'path': path,
-            'dest': meta.get('dest'),
-            'size': meta.get('size'),
-            'mtime': meta.get('mtime'),
-            'copied_at': meta.get('copied_at')
-        } for path, meta in files.items()]
+        items = []
+        for path, meta in files.items():
+            folder = meta.get('folder') or {}
+            items.append({
+                'path': path,
+                # dest/copied_at на верхнем уровне — формат журнала до 2.0
+                'dest': folder.get('dest') or meta.get('dest'),
+                'size': meta.get('size'),
+                'mtime': meta.get('mtime'),
+                'copied_at': folder.get('done_at') or meta.get('copied_at'),
+                'dicom': meta.get('dicom')
+            })
         items.sort(key=lambda x: x.get('copied_at') or 0, reverse=True)
         return {'total': len(items), 'items': items[offset:offset + limit]}
 

@@ -47,6 +47,29 @@ class CopyUtilityNetShare(CopyUtility):
     def _retrieve(self, path, tmp):
         SmbClient.retrieve(self, path, tmp)
 
+    def _localSource(self, path):
+        # Источник на SMB-шаре: материализуем во временный локальный файл
+        # для C-STORE; удаляется сразу после отправки.
+        import tempfile
+        fd, tmp = tempfile.mkstemp(prefix='rtlc-net-', suffix='.dcm')
+        os.close(fd)
+        try:
+            self._retrieve(path, tmp)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+
+        def cleanup():
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+        return tmp, cleanup
+
     def scandir(self, path, found):
         SmbClient.scandir(self, path, found)
 

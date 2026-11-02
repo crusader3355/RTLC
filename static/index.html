@@ -64,6 +64,8 @@ input,select{width:100%;background:#0a0e13;border:1px solid var(--border);color:
     <div class="card"><div class="v" id="cFailed">–</div><div class="k">Ошибок</div></div>
     <div class="card"><div class="v" id="cCycles">–</div><div class="k">Циклов</div></div>
     <div class="card"><div class="v" id="cLedger">–</div><div class="k">В журнале</div></div>
+    <div class="card"><div class="v" id="cDicomSent">–</div><div class="k">DICOM отправлено</div></div>
+    <div class="card"><div class="v" id="cDicomFailed">–</div><div class="k">DICOM ошибок</div></div>
     <div class="card"><div class="v" id="cLastCycle" style="font-size:14px">–</div><div class="k">Последний цикл</div></div>
     <div class="card"><div class="v" id="cUptime" style="font-size:14px">–</div><div class="k">Аптайм движка</div></div>
   </div>
@@ -74,6 +76,8 @@ input,select{width:100%;background:#0a0e13;border:1px solid var(--border);color:
     <button class="act sec" onclick="control('start')">Запустить</button>
     <button class="act sec" onclick="control('stop')">Остановить</button>
     <button class="act sec" onclick="control('restart')">Перезапустить</button>
+    <button class="act sec" onclick="dicomEcho()">C-ECHO</button>
+    <span id="echoMsg" style="margin-left:10px"></span>
   </div>
   <div class="panel"><b>Последние скопированные</b>
     <table id="recent"><thead><tr><th>Время</th><th>Источник</th><th>Копия</th><th>Размер</th><th>Сек</th></tr></thead><tbody></tbody></table>
@@ -82,7 +86,7 @@ input,select{width:100%;background:#0a0e13;border:1px solid var(--border);color:
 
 <div id="tab-files" class="tab">
   <div class="panel"><b>Журнал скопированных</b> <span class="dim" id="ledgerTotal"></span>
-    <table id="ledger"><thead><tr><th>Скопирован</th><th>Источник</th><th>Копия</th><th>Размер</th></tr></thead><tbody></tbody></table>
+    <table id="ledger"><thead><tr><th>Скопирован</th><th>Источник</th><th>Копия</th><th>Размер</th><th>DICOM</th></tr></thead><tbody></tbody></table>
     <div style="margin-top:8px"><button class="act sec" onclick="loadLedger()">Обновить</button></div>
   </div>
 </div>
@@ -115,6 +119,10 @@ let cfgFields=[
  ['user_name','SMB: пользователь'],['user_password','SMB: пароль'],
  ['client_machine_name','SMB: имя клиента'],['remote_machine_name','SMB: имя сервера'],
  ['logs_level','Уровень логов'],['logs_size','Размер лога, МБ'],['logs_backups','Бэкапов логов'],
+ ['to_folder','Сток: в папку (true/false)'],['to_dicom','Сток: на DICOM-узел (true/false)'],
+ ['dicom_host','DICOM: хост'],['dicom_port','DICOM: порт'],
+ ['dicom_called_aet','DICOM: Called AE Title'],['dicom_calling_aet','DICOM: Calling AE Title'],
+ ['dicom_timeout','DICOM: таймаут, с'],
  ['web_host','Web: host'],['web_port','Web: порт'],['web_trust_loopback','Web: trust loopback'],['web_api_key','Web: API-ключ']];
 
 function apiKey(){return localStorage.getItem('rtlc_api_key')||''}
@@ -149,9 +157,11 @@ function renderStatus(s){
   $('cBacklog').textContent=u.backlog; $('cStab').textContent=u.stabilizing;
   $('cCopied').textContent=u.stats.copied; $('cFailed').textContent=u.stats.failed;
   $('cCycles').textContent=u.stats.cycles; $('cLedger').textContent=u.ledgerSize;
+  $('cDicomSent').textContent=u.stats.dicom_sent; $('cDicomFailed').textContent=u.stats.dicom_failed;
   $('cLastCycle').textContent=fmtTime(u.stats.last_cycle_at);
   $('cUptime').textContent=fmtDur(Date.now()/1000-u.stats.started_at);
-  $('paths').textContent=`${u.remotePath} → ${u.localPath} | фильтр: ${u.extensionFile.join(', ')||'(все)'} | scan ${u.refreshTime}с | stab ${u.stabilizeTime}с`;
+  const d=u.delivery||{};
+  $('paths').textContent=`${u.remotePath} → ${d.toFolder?u.localPath:''}${d.toFolder&&d.toDicom?' + ':''}${d.toDicom?('DICOM '+d.dicomNode):''} | фильтр: ${u.extensionFile.join(', ')||'(все)'} | scan ${u.refreshTime}с | stab ${u.stabilizeTime}с`;
   const tb=$('recent').querySelector('tbody'); tb.innerHTML='';
   for(const r of u.recent){
     const tr=document.createElement('tr');
@@ -167,12 +177,23 @@ async function control(action){
     if(r.ok){renderStatus(await r.json());}else{const d=await r.json();toast(d.detail||'Ошибка',true);}
   }catch(e){if(e.message!=='auth')toast(String(e),true);}
 }
+async function dicomEcho(){
+  const m=$('echoMsg');m.innerHTML='<span class="dim">проверка…</span>';
+  try{const r=await api('/api/v1/dicom/echo',{method:'POST'});const d=await r.json();
+    if(r.ok){m.innerHTML=d.ok?`<span class="ok">✓ ${d.node}: ${d.message}</span>`:`<span class="err">✗ ${d.node}: ${d.message}</span>`;}
+    else{m.innerHTML='<span class="err">'+(d.detail||'Ошибка')+'</span>';}
+  }catch(e){if(e.message!=='auth')m.innerHTML='<span class="err">'+e+'</span>';}
+}
 async function loadLedger(){
   try{const r=await api('/api/v1/ledger?limit=300');const d=await r.json();
     $('ledgerTotal').textContent=`— всего записей: ${d.total}`;
     const tb=$('ledger').querySelector('tbody');tb.innerHTML='';
     for(const it of d.items){const tr=document.createElement('tr');
-      tr.innerHTML=`<td>${fmtTime(it.copied_at)}</td><td title="${it.path}">${it.path}</td><td>${it.dest||''}</td><td>${fmtSize(it.size)}</td>`;
+      let dcm='<span class="dim">—</span>';
+      if(it.dicom){dcm=it.dicom.sent?`<span class="ok">✓ ${fmtTime(it.dicom.sent_at)}</span>`
+        :(it.dicom.permanent?`<span class="err" title="${it.dicom.last_error||''}">✗ не отправлен</span>`
+        :`<span class="dim" title="${it.dicom.last_error||''}">… ожидает</span>`);}
+      tr.innerHTML=`<td>${fmtTime(it.copied_at)}</td><td title="${it.path}">${it.path}</td><td>${it.dest||''}</td><td>${fmtSize(it.size)}</td><td>${dcm}</td>`;
       tb.appendChild(tr);}
   }catch(e){if(e.message!=='auth')toast(String(e),true);}
 }

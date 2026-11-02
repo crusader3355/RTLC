@@ -66,6 +66,18 @@ def write_config(paths, **opts):
         f'local = {local}\n\n'
         '[Logs]\nlevel = DEBUG\nsize = 5\nbackups = 2\n'
     )
+    delivery = []
+    for k in ('to_folder', 'to_dicom'):
+        if k in opts:
+            delivery.append(f'{k} = {opts[k]}')
+    if delivery:
+        ini += '\n[Delivery]\n' + '\n'.join(delivery) + '\n'
+    dicom = []
+    for k in ('host', 'port', 'called_aet', 'calling_aet', 'timeout'):
+        if f'dicom_{k}' in opts:
+            dicom.append(f"{k} = {opts[f'dicom_{k}']}")
+    if dicom:
+        ini += '\n[Dicom]\n' + '\n'.join(dicom) + '\n'
     with open(os.path.join(paths['work'], 'config.ini'), 'w',
               encoding='utf-8') as f:
         f.write(ini)
