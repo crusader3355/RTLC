@@ -287,6 +287,11 @@ python -m pytest tests/ -v
 - Зависимости: `requirements.txt` (fastapi, uvicorn, websockets), dev —
   `requirements-dev.txt` (+pytest, httpx). Для GUI нужен Python 3.10+
   (ядро rtlc.py остаётся совместимым с более старыми версиями).
+- **Форма настроек типизирована** (static/index.html): переключатели для
+  bool (to_folder/to_dicom/use_network_share/web_trust_loopback), select
+  для logs_level, datepicker (datetime-local) для start_date, number для
+  портов/таймаутов, password для секретов; поля сгруппированы по секциям
+  и блокируются при выключенном родительском стоке/шаре.
 
 ## 10. Продакшен-сборка (dist/rtlc.exe)
 

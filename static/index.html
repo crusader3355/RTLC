@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RTLC — Remote To Local Copy</title>
 <style>
-:root{--bg:#0f141a;--panel:#1a2230;--border:#2a3546;--fg:#dbe4ee;--dim:#8494a7;--ok:#3fb96c;--bad:#e05555;--warn:#e0a63f;--acc:#4f9cf0}
+:root{--bg:#0f141a;--panel:#1a2230;--border:#2a3546;--fg:#dbe4ee;--dim:#8494a7;--ok:#3fb96c;--bad:#e05555;--warn:#e0a63f;--acc:#4f9cf0;color-scheme:dark}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--fg);font:14px/1.45 "Segoe UI",system-ui,sans-serif;padding:16px;max-width:1100px;margin:0 auto}
 h1{font-size:18px;display:flex;align-items:center;gap:10px;margin-bottom:12px}
@@ -30,6 +30,15 @@ th{color:var(--dim);font-weight:600}
 pre{background:#0a0e13;border:1px solid var(--border);border-radius:8px;padding:10px;height:480px;overflow:auto;font:12px/1.4 Consolas,monospace;white-space:pre-wrap}
 label{display:block;color:var(--dim);font-size:12px;margin:8px 0 3px}
 input,select{width:100%;background:#0a0e13;border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:7px 9px}
+input:disabled,select:disabled{opacity:.4}
+input.switch{appearance:none;width:42px;height:22px;background:#0a0e13;border:1px solid var(--border);border-radius:11px;position:relative;cursor:pointer;transition:.15s;padding:0;flex:none}
+input.switch:checked{background:var(--acc);border-color:var(--acc)}
+input.switch::after{content:'';position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--dim);transition:.15s}
+input.switch:checked::after{left:23px;background:#fff}
+.switchrow{display:flex;flex-direction:row;align-items:center;justify-content:space-between;margin-top:24px;gap:8px}
+.switchrow label{margin:0}
+.cfgsec{grid-column:1/-1;color:var(--acc);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-top:12px;margin-top:4px}
+.cfgsec:first-child{padding-top:0;border-bottom:0}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
 #keyOverlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:10}
 #keyOverlay .panel{width:420px}
@@ -110,20 +119,40 @@ input,select{width:100%;background:#0a0e13;border:1px solid var(--border);color:
 <div id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);
+const LOG_LEVELS=['DEBUG','INFO','WARNING','ERROR','CRITICAL'];
+// [key, label, type]; type: text|password|int|float|bool|loglevel|date
+// '_sec' — заголовок группы
 let cfgFields=[
- ['remote','Источник (remote)'],['local','Назначение (local)'],
- ['extension_file','Фильтр расширений (.[empty] — без расширения)'],['refresh_time','Интервал сканирования, с'],
- ['stabilize_time','Окно стабилизации, с'],['start_date','Стартовая дата'],
- ['last_file','Watermark (last_file)'],['use_network_share','SMB-шара (true/false)'],
- ['share_ip','SMB: IP'],['share_port','SMB: порт (445/139)'],['share_name','SMB: шара'],
- ['user_name','SMB: пользователь'],['user_password','SMB: пароль'],
- ['client_machine_name','SMB: имя клиента'],['remote_machine_name','SMB: имя сервера'],
- ['logs_level','Уровень логов'],['logs_size','Размер лога, МБ'],['logs_backups','Бэкапов логов'],
- ['to_folder','Сток: в папку (true/false)'],['to_dicom','Сток: на DICOM-узел (true/false)'],
- ['dicom_host','DICOM: хост'],['dicom_port','DICOM: порт'],
- ['dicom_called_aet','DICOM: Called AE Title'],['dicom_calling_aet','DICOM: Calling AE Title'],
- ['dicom_timeout','DICOM: таймаут, с'],
- ['web_host','Web: host'],['web_port','Web: порт'],['web_trust_loopback','Web: trust loopback'],['web_api_key','Web: API-ключ']];
+ ['_sec','Основное'],
+ ['remote','Источник (remote)','text'],['local','Назначение (local)','text'],
+ ['extension_file','Фильтр расширений (.[empty] — без расширения)','text'],
+ ['refresh_time','Интервал сканирования, с','int'],
+ ['stabilize_time','Окно стабилизации, с','float'],
+ ['start_date','Стартовая дата','date'],['last_file','Watermark (last_file)','float'],
+ ['_sec','Доставка'],
+ ['to_folder','Сток: складывать в папку','bool'],
+ ['to_dicom','Сток: отправлять на DICOM-узел','bool'],
+ ['_sec','SMB-шара'],
+ ['use_network_share','Использовать SMB-шару','bool'],
+ ['share_ip','SMB: IP','text'],['share_port','SMB: порт (445)','int'],['share_name','SMB: шара','text'],
+ ['user_name','SMB: пользователь','text'],['user_password','SMB: пароль','password'],
+ ['client_machine_name','SMB: имя клиента','text'],['remote_machine_name','SMB: имя сервера','text'],
+ ['_sec','DICOM-узел'],
+ ['dicom_host','DICOM: хост','text'],['dicom_port','DICOM: порт','int'],
+ ['dicom_called_aet','DICOM: Called AE Title','text'],['dicom_calling_aet','DICOM: Calling AE Title','text'],
+ ['dicom_timeout','DICOM: таймаут, с','int'],
+ ['_sec','Логи'],
+ ['logs_level','Уровень логов','loglevel'],
+ ['logs_size','Размер лога, МБ','int'],['logs_backups','Бэкапов логов','int'],
+ ['_sec','Веб-интерфейс'],
+ ['web_host','Web: host','text'],['web_port','Web: порт','int'],
+ ['web_trust_loopback','Web: trust loopback','bool'],['web_api_key','Web: API-ключ','password']];
+// зависимости: поля -> переключатель, от которого зависят
+const DEP_FIELDS={'local':'to_folder','share_ip':'use_network_share','share_port':'use_network_share',
+ 'share_name':'use_network_share','user_name':'use_network_share','user_password':'use_network_share',
+ 'client_machine_name':'use_network_share','remote_machine_name':'use_network_share',
+ 'dicom_host':'to_dicom','dicom_port':'to_dicom','dicom_called_aet':'to_dicom',
+ 'dicom_calling_aet':'to_dicom','dicom_timeout':'to_dicom'};
 
 function apiKey(){return localStorage.getItem('rtlc_api_key')||''}
 async function api(path,opt={}){
@@ -204,19 +233,76 @@ async function loadLog(){
     const v=$('logView');v.textContent=d.lines.join('\n')||'(лог пуст)';v.scrollTop=v.scrollHeight;
   }catch(e){if(e.message!=='auth')console.warn(e);}
 }
+function buildField(key,label,type,val){
+  const div=document.createElement('div');
+  const lab=document.createElement('label');
+  lab.innerHTML=`${label} <span class="dim">[${key}]</span>`;
+  let inp;
+  if(type==='bool'){
+    div.className='switchrow';
+    inp=document.createElement('input');
+    inp.type='checkbox';inp.className='switch';
+    inp.checked=val===true||String(val).toLowerCase()==='true';
+    div.appendChild(lab);div.appendChild(inp);
+  }else{
+    if(type==='loglevel'){
+      inp=document.createElement('select');
+      for(const o of LOG_LEVELS){
+        const op=document.createElement('option');
+        op.value=o;op.textContent=o;inp.appendChild(op);}
+      inp.value=String(val||'').toUpperCase();
+      if(!inp.value)inp.value='INFO';
+    }else{
+      inp=document.createElement('input');
+      if(type==='password'){inp.type='password';inp.autocomplete='new-password';}
+      else if(type==='int'){inp.type='number';inp.step='1';}
+      else if(type==='float'){inp.type='number';inp.step='any';}
+      else if(type==='date'){
+        inp.type='datetime-local';
+        const m=/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(String(val||''));
+        if(m)inp.value=`${m[1]}T${m[2]}`;
+      }
+      else inp.type='text';
+      if(type!=='date')inp.value=val===null||val===undefined?'':val;
+    }
+    div.appendChild(lab);div.appendChild(inp);
+  }
+  inp.dataset.key=key;inp.dataset.type=type;
+  return div;
+}
+function updateDeps(){
+  const state=k=>{const el=document.querySelector(`#cfgForm [data-key="${k}"]`);
+    return el&&el.type==='checkbox'?el.checked:null;};
+  document.querySelectorAll('#cfgForm [data-key]').forEach(el=>{
+    const master=DEP_FIELDS[el.dataset.key];
+    if(!master)return;
+    const on=state(master);
+    el.disabled=!on;
+    const lab=el.closest('div').querySelector('label');
+    if(lab)lab.style.opacity=on?'':'0.45';
+  });
+}
 async function loadConfig(){
   try{const r=await api('/api/v1/config');const cfg=await r.json();
     const f=$('cfgForm');f.innerHTML='';
-    for(const[key,label]of cfgFields){
-      const div=document.createElement('div');
-      const val=cfg[key]!==undefined?cfg[key]:'';
-      div.innerHTML=`<label>${label} <span class="dim">[${key}]</span></label><input data-key="${key}" value="${val===null?'':val}">`;
-      f.appendChild(div);}
+    for(const[key,label,type]of cfgFields){
+      if(key==='_sec'){
+        const h=document.createElement('div');
+        h.className='cfgsec';h.textContent=label;
+        f.appendChild(h);continue;}
+      f.appendChild(buildField(key,label,type,cfg[key]));}
+    f.addEventListener('change',e=>{
+      if(e.target.dataset.type==='bool')updateDeps();});
+    updateDeps();
   }catch(e){if(e.message!=='auth')toast(String(e),true);}
 }
 async function saveConfig(){
   const body={};
-  document.querySelectorAll('#cfgForm input').forEach(i=>body[i.dataset.key]=i.value);
+  document.querySelectorAll('#cfgForm [data-key]').forEach(i=>{
+    const t=i.dataset.type;
+    if(t==='bool')body[i.dataset.key]=i.checked?'true':'false';
+    else if(t==='date')body[i.dataset.key]=i.value?i.value.replace('T',' '):'';
+    else body[i.dataset.key]=i.value;});
   try{const r=await api('/api/v1/config',{method:'PUT',body:JSON.stringify(body)});
     const d=await r.json();
     if(r.ok){$('cfgMsg').innerHTML='<span class="ok">Сохранено, движок: '+d.engine+'</span>';refresh();}
