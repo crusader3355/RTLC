@@ -1,7 +1,7 @@
 /build
 /local
 /remote
-/__pycache__
+__pycache__/
 config.ini
 dist/config.ini
 /logs
@@ -10,4 +10,3 @@ dist/logs/
 rtlc.state.json
 rtlc.state.json.tmp
 config.ini.tmp
-prompt.txt
