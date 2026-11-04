@@ -52,6 +52,13 @@ class SmbClient():
             dst.flush()
             os.fsync(dst.fileno())
 
+    def exists(self, path):
+        try:
+            smb.stat(self._unc(path))
+            return True
+        except Exception:
+            return False
+
     def scandir(self, rel, found, accept):
         try:
             with smb.scandir(self._unc(rel)) as it:

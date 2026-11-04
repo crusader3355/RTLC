@@ -57,6 +57,11 @@ EDITABLE = {
     'dicom_called_aet': ('dicomCalledAet', str),
     'dicom_calling_aet': ('dicomCallingAet', str),
     'dicom_timeout': ('dicomTimeout', int),
+    'dicom_retry_initial': ('dicomRetryInitial', int),
+    'dicom_retry_max': ('dicomRetryMax', int),
+    'dicom_breaker_threshold': ('dicomBreakerThreshold', int),
+    'dicom_breaker_cooldown': ('dicomBreakerCooldown', int),
+    'dicom_queue_tick': ('dicomQueueTick', int),
 }
 
 LOG_LEVELS = {'NOTSET', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'}
@@ -229,6 +234,16 @@ def _validate(key, value):
         raise HTTPException(400, 'share_port must be in 1..65535')
     if key == 'dicom_timeout' and value < 1:
         raise HTTPException(400, 'dicom_timeout must be >= 1')
+    if key == 'dicom_retry_initial' and value < 1:
+        raise HTTPException(400, 'dicom_retry_initial must be >= 1')
+    if key == 'dicom_retry_max' and value < 1:
+        raise HTTPException(400, 'dicom_retry_max must be >= 1')
+    if key == 'dicom_breaker_threshold' and value < 1:
+        raise HTTPException(400, 'dicom_breaker_threshold must be >= 1')
+    if key == 'dicom_breaker_cooldown' and value < 1:
+        raise HTTPException(400, 'dicom_breaker_cooldown must be >= 1')
+    if key == 'dicom_queue_tick' and value < 1:
+        raise HTTPException(400, 'dicom_queue_tick must be >= 1')
     if key in ('dicom_called_aet', 'dicom_calling_aet') and (
             len(value) > 16 or not value.strip() == value):
         raise HTTPException(400, f'{key}: AE Title — до 16 символов без пробелов по краям')
@@ -309,6 +324,54 @@ def create_app(engine: Engine | None = None) -> FastAPI:
         ok, msg = await run_in_threadpool(_ping)
         return {'ok': ok, 'message': msg,
                 'node': f'{cfg.dicomCalledAet}@{cfg.dicomHost}:{cfg.dicomPort}'}
+
+    def _queue_or_404(app):
+        eng = app.state.engine
+        if eng.utility is None or eng.utility.dicom_queue is None:
+            raise HTTPException(409,
+                                'Engine is not running or DICOM delivery '
+                                'is disabled')
+        return eng.utility.dicom_queue
+
+    @app.get('/api/v1/dicom/queue')
+    async def dicom_queue_status(_=Depends(verify_api_key)):
+        eng = app.state.engine
+        if eng.utility is None or eng.utility.dicom_queue is None:
+            return {'summary': None, 'items': []}
+        q = eng.utility.dicom_queue
+        return {'summary': q.summary(), 'items': q.items()}
+
+    @app.post('/api/v1/dicom/queue/retry_now')
+    async def dicom_queue_retry(_=Depends(verify_api_key)):
+        q = _queue_or_404(app)
+        q.retry_now()
+        return {'ok': True, 'summary': q.summary()}
+
+    @app.post('/api/v1/dicom/queue/purge_permanent')
+    async def dicom_queue_purge(_=Depends(verify_api_key)):
+        q = _queue_or_404(app)
+        import csv
+        from time import strftime
+        purged = []
+        with q.u.state_lock:
+            for path, entry in list(q.u.state['files'].items()):
+                d = entry.get('dicom')
+                if d and d.get('permanent'):
+                    purged.append((path, entry.get('size'),
+                                   entry.get('mtime'), d.get('attempts'),
+                                   d.get('last_error')))
+                    del q.u.state['files'][path]
+            if purged:
+                q.u.saveState()
+        if purged:
+            os.makedirs('Logs', exist_ok=True)
+            name = f'Logs/dicom_permanent_{strftime("%Y%m%d_%H%M%S")}.csv'
+            with open(name, 'w', newline='', encoding='utf-8') as f:
+                csv.writer(f).writerows(
+                    [['path', 'size', 'mtime', 'attempts', 'last_error']] +
+                    purged)
+        return {'purged': len(purged),
+                'archive': name if purged else None}
 
     @app.get('/api/v1/config')
     async def get_config(_=Depends(verify_api_key)):

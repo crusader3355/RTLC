@@ -326,13 +326,21 @@ python -m pytest tests/ -v
 декодируются). Обрабатываются только стабилизированные файлы.
 
 - **Журнал по стокам**: запись файла — `{size, mtime, folder: {dest,
-  done_at}, dicom: {sent, sent_at, attempts, last_error, permanent}}`.
+  done_at}, dicom: {queued, queued_at, sent, sent_at, attempts,
+  next_attempt, last_error, permanent, quarantine}}`.
   Файл завершён, когда приняли все включённые стоки; ретраится только
   упавший. Старые записи журнала мигрируются в новый формат при загрузке.
+- **Отложенная очередь** (`dicom_queue.py`, см. `DICOM_QUEUE_PLAN.md`):
+  C-STORE выполняет отдельный поток `DicomQueue`, walker лишь ставит
+  файлы в очередь (файлы ждут в источнике, spool нет — решение
+  пользователя). Backoff per-file 30с→×2→max 600с (jitter 20%),
+  circuit breaker (5 фейлов подряд → пауза 120 с + проба C-ECHO),
+  quarantine при исчезновении источника. Параметры — `[Dicom]
+  retry_initial/retry_max/breaker_threshold/breaker_cooldown/queue_tick`.
 - **Классификация ошибок C-STORE**: транзиентные (нет ассоциации, сеть,
-  0xA7xx) — ретрай каждый цикл; перманентные (не DICOM-файл, 0xCxxx) —
-  файл завершается с пометкой, без бесконечного ретрая; warning
-  (0xBxxx) считается доставкой.
+  0xA7xx) — ретрай по backoff из очереди; перманентные (не DICOM-файл,
+  0xCxxx) — файл завершается с пометкой, без бесконечного ретрая;
+  warning (0xBxxx) считается доставкой.
 - **Инвариант безопасности источника**: движок никогда не пишет и не
   удаляет в `remote` (покрыто тестом: байты и mtime источника неизменны).
 - **`to_folder=false`**: папка `local` не требуется и не создаётся;
@@ -341,10 +349,15 @@ python -m pytest tests/ -v
 - **GUI**: галочки стоков и поля `[Dicom]` в настройках (валидация: оба
   стока выключены → 400; to_dicom без host/called_aet → 400), счётчики
   DICOM в статусе, колонка DICOM в журнале, кнопка C-ECHO
-  (`POST /api/v1/dicom/echo`).
-- **Тесты** (`tests/test_dicom_send.py`, 9 шт.): настоящий C-STORE SCP на
+  (`POST /api/v1/dicom/echo`), вкладка «Очередь DICOM» (сводка breaker'а,
+  таблица ожидающих, «Отправить сейчас», «Очистить permanent» с
+  CSV-архивом в `Logs/`); API `GET /api/v1/dicom/queue`,
+  `POST .../queue/retry_now`, `POST .../queue/purge_permanent`.
+- **Тесты** (`tests/test_dicom_send.py`, 13 шт.): настоящий C-STORE SCP на
   pynetdicom — оба стока / только DICOM / узел лежит→поднялся (ретрай без
-  дубля в папке) / не-DICOM → permanent / валидации / echo up/down /
+  дубля в папке, walker не блокируется) / не-DICOM → permanent /
+  backoff растёт / breaker открывается и держит паузу / quarantine /
+  очередь переживает рестарт / валидации / echo up/down /
   неизменность источника.
 - Зависимости: + `pydicom`, `pynetdicom` (в requirements.txt и в exe).
 

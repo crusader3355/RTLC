@@ -117,6 +117,11 @@ class CopyUtility():
         self.dicomCalledAet = self.config.dicomCalledAet
         self.dicomCallingAet = self.config.dicomCallingAet
         self.dicomTimeout = self.config.dicomTimeout
+        self.dicomRetryInitial = self.config.dicomRetryInitial
+        self.dicomRetryMax = self.config.dicomRetryMax
+        self.dicomBreakerThreshold = self.config.dicomBreakerThreshold
+        self.dicomBreakerCooldown = self.config.dicomBreakerCooldown
+        self.dicomQueueTick = max(1, self.config.dicomQueueTick)
 
         if not self.toFolder and not self.toDicom:
             self.log.error(
@@ -183,6 +188,12 @@ class CopyUtility():
                       f'{f" ({self.localPath})" if self.toFolder else ""}, '
                       f'dicom={self.toDicom}'
                       f'{f" ({self.dicomCalledAet}@{self.dicomHost}:{self.dicomPort})" if self.toDicom else ""}')
+        if self.toDicom:
+            self.log.info(
+                f'    DICOM queue: retry {self.dicomRetryInitial}s'
+                f'..{self.dicomRetryMax}s, breaker '
+                f'{self.dicomBreakerThreshold}/{self.dicomBreakerCooldown}s, '
+                f'tick {self.dicomQueueTick}s')
         self.log.info(f'    Extension file: {self.extensionFile}')
         self.log.info(f'    Start date: {self.config.startDate}')
         self.log.info(
@@ -205,6 +216,8 @@ class CopyUtility():
         self.pending = {}
         self.stop_event = threading.Event()
         self._cycle_lock = threading.Lock()
+        self.state_lock = threading.RLock()
+        self.dicom_queue = None
         self.stats = {
             'cycles': 0,
             'copied': 0,
@@ -272,11 +285,12 @@ class CopyUtility():
         self.scandir(self.remotePath, found)
 
         backlog = []
-        for path, (size, mtime) in sorted(found.items()):
-            if self._deliveryDone(self.state['files'].get(path), size,
-                                  mtime):
-                continue
-            backlog.append((path, size, mtime))
+        with self.state_lock:
+            for path, (size, mtime) in sorted(found.items()):
+                if self._deliveryDone(self.state['files'].get(path), size,
+                                      mtime):
+                    continue
+                backlog.append((path, size, mtime))
 
         # Стабилизация источника: копируем только файлы, чьи размер и
         # mtime не изменились между сканированиями и которые «отлежались»
@@ -348,8 +362,9 @@ class CopyUtility():
 
     def _deliveryDone(self, entry, size, mtime) -> bool:
         """Файл завершён, когда запись в журнале соответствует текущим
-        size/mtime и все включённые стоки его приняли (permanent-ошибка
-        DICOM тоже завершает файл — ретрай бессмысленен)."""
+        size/mtime и все включённые стоки его приняли. DICOM-сток:
+        sent/permanent — финал; quarantine — источник исчез, повтор
+        невозможен; queued — файл живёт в очереди DicomQueue."""
         if not entry or entry.get('size') != size or entry.get(
                 'mtime') != mtime:
             return False
@@ -357,86 +372,77 @@ class CopyUtility():
             return False
         if self.toDicom:
             d = entry.get('dicom') or {}
-            if not d.get('sent') and not d.get('permanent'):
+            if d.get('sent') or d.get('permanent') or d.get('quarantine'):
+                pass
+            elif d.get('queued'):
+                pass
+            else:
                 return False
         return True
 
     def deliver(self, path, size, mtime) -> bool:
         """Доставка файла во все включённые стоки; в журнал пишется
-        прогресс по каждому стоку отдельно (ретраится только упавший)."""
-        entry = self.state['files'].get(path)
-        resent = bool(entry) and (entry.get('size') != size
-                                  or entry.get('mtime') != mtime)
-        entry = dict(entry or {})
-        if resent or entry.get('size') != size or entry.get(
-                'mtime') != mtime:
-            entry = {'size': size, 'mtime': mtime}
-        changed = False
+        прогресс по каждому стоку отдельно. DICOM-файл не отправляется
+        здесь — он ставится в очередь DicomQueue (отдельный поток), чтобы
+        недоступный узел не блокировал приём новых файлов и сток «в папку».
+        Тело под state_lock: очередь читает/пишет те же записи журнала."""
+        with self.state_lock:
+            entry = self.state['files'].get(path)
+            resent = bool(entry) and (entry.get('size') != size
+                                      or entry.get('mtime') != mtime)
+            entry = dict(entry or {})
+            if resent or entry.get('size') != size or entry.get(
+                    'mtime') != mtime:
+                entry = {'size': size, 'mtime': mtime}
+            changed = False
 
-        dicom_src = None
-        if self.toFolder and not entry.get('folder'):
-            newName = f'{uuid4()}{os.path.splitext(path)[1]}'
-            started = time.time()
-            if self.copyfile(path, os.path.join(self.localPath, newName)):
-                done_at = time.time()
-                entry['folder'] = {'dest': newName, 'done_at': done_at}
-                changed = True
-                self.stats['copied'] += 1
-                self.recent.appendleft({
-                    'src': path,
-                    'dest': newName,
-                    'size': size,
-                    'duration': round(done_at - started, 3),
-                    'copied_at': done_at,
-                    'resent': resent
-                })
-                self.log.info(
-                    f'File "{newName} << {path}" copied to local folder: '
-                    f'{size} bytes in {done_at - started:.2f}s'
-                    f'{" (re-sent, content changed)" if resent else ""}.')
-            else:
-                self.stats['failed'] += 1
-                self.log.error(f"File '{path}' not copied to local folder.")
-        if self.toFolder and entry.get('folder'):
-            candidate = os.path.join(self.localPath, entry['folder']['dest'])
-            if os.path.exists(candidate):
-                dicom_src = candidate
-
-        if self.toDicom:
-            d = dict(entry.get('dicom') or {})
-            if not d.get('sent') and not d.get('permanent'):
-                d['attempts'] = d.get('attempts', 0) + 1
-                if dicom_src is not None:
-                    ok, err, permanent = self.sendViaDicom(dicom_src,
-                                                           already_local=True)
-                else:
-                    ok, err, permanent = self.sendViaDicom(path)
-                if ok:
-                    d['sent'] = True
-                    d['sent_at'] = time.time()
-                    d.pop('last_error', None)
-                    d.pop('permanent', None)
-                    self.stats['dicom_sent'] += 1
+            if self.toFolder and not entry.get('folder'):
+                newName = f'{uuid4()}{os.path.splitext(path)[1]}'
+                started = time.time()
+                if self.copyfile(path, os.path.join(self.localPath, newName)):
+                    done_at = time.time()
+                    entry['folder'] = {'dest': newName, 'done_at': done_at}
+                    changed = True
+                    self.stats['copied'] += 1
+                    self.recent.appendleft({
+                        'src': path,
+                        'dest': newName,
+                        'size': size,
+                        'duration': round(done_at - started, 3),
+                        'copied_at': done_at,
+                        'resent': resent
+                    })
                     self.log.info(
-                        f'File "{path}" sent to DICOM node '
-                        f'{self.dicomCalledAet}@{self.dicomHost}:{self.dicomPort}'
-                        f'{f" ({err})" if err else ""}.')
+                        f'File "{newName} << {path}" copied to local folder: '
+                        f'{size} bytes in {done_at - started:.2f}s'
+                        f'{" (re-sent, content changed)" if resent else ""}.')
                 else:
-                    d['last_error'] = err
-                    if permanent:
-                        d['permanent'] = True
-                    self.stats['dicom_failed'] += 1
+                    # Назначение недоступно: файл ждёт в источнике, в
+                    # журнал запись не пишем (бэклог пересчитывается
+                    # каждый цикл) — ретрай при восстановлении папки.
+                    self.stats['failed'] += 1
                     self.log.error(
-                        f"File '{path}' not sent to DICOM node "
-                        f'{self.dicomCalledAet}@{self.dicomHost}:{self.dicomPort}: '
-                        f'{err}{" (permanent, will not retry)" if permanent else ""}')
-                entry['dicom'] = d
-                changed = True
+                        f"File '{path}' not copied to local folder.")
 
-        if changed:
-            self.state['files'][path] = entry
-            self.saveState()
-        return self._deliveryDone(entry, size, mtime)
+            if self.toDicom:
+                d = entry.get('dicom') or {}
+                if not d.get('queued') and not d.get('sent') and not d.get(
+                        'permanent') and not d.get('quarantine'):
+                    d = dict(d)
+                    d['queued'] = True
+                    d['queued_at'] = time.time()
+                    d.setdefault('attempts', 0)
+                    d['next_attempt'] = 0.0
+                    entry['dicom'] = d
+                    changed = True
+                    self.log.info(f'File "{path}" queued for DICOM delivery.')
+                    if self.dicom_queue:
+                        self.dicom_queue.wake()
+
+            if changed:
+                self.state['files'][path] = entry
+                self.saveState()
+            return self._deliveryDone(entry, size, mtime)
 
     def sendViaDicom(self, path, already_local=False) -> tuple:
         """C-STORE одного файла. Для SMB-источника файл предварительно
@@ -512,13 +518,27 @@ class CopyUtility():
             self.walker()
 
     def run_forever(self):
-        while not self.stop_event.is_set():
-            try:
-                self.walk_cycle()
-            except Exception as exc:
-                self.stats['last_error'] = f'{type(exc).__name__}: {exc}'
-                self.log.exception('Unhandled error in walker(), continuing.')
-            self.timeout()
+        if self.toDicom:
+            from dicom_queue import DicomQueue
+            self.dicom_queue = DicomQueue(self)
+            self.dicom_queue.start()
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    self.walk_cycle()
+                except Exception as exc:
+                    self.stats['last_error'] = f'{type(exc).__name__}: {exc}'
+                    self.log.exception(
+                        'Unhandled error in walker(), continuing.')
+                self.timeout()
+        finally:
+            if self.dicom_queue:
+                self.dicom_queue.stop()
+                self.dicom_queue = None
+
+    def sourceExists(self, path) -> bool:
+        """Доступность файла в источнике (SMB-режим переопределяет)."""
+        return os.path.exists(path)
 
     def status(self) -> dict:
         return {
@@ -538,6 +558,8 @@ class CopyUtility():
             'backlog': len(self.remoteList),
             'stabilizing': len(self.pending),
             'ledgerSize': len(self.state['files']),
+            'dicomQueue': self.dicom_queue.summary()
+            if self.dicom_queue else None,
             'stats': dict(self.stats),
             'recent': list(self.recent)
         }

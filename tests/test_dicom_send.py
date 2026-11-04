@@ -101,13 +101,27 @@ def dicom_opts(scp, **extra):
     return o
 
 
+def drain_queue(inst):
+    """Синхронный прогон DicomQueue (в рантайме она работает потоком)."""
+    if not getattr(inst, 'toDicom', False):
+        return
+    if inst.dicom_queue is None:
+        from dicom_queue import DicomQueue
+        inst.dicom_queue = DicomQueue(inst)
+    inst.dicom_queue.retry_now()
+    inst.dicom_queue._drain()
+
+
 def deliver_until(inst, predicate, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         inst.walker()
+        drain_queue(inst)
         if predicate():
             return True
         time.sleep(0.15)
+    inst.walker()
+    drain_queue(inst)
     return predicate()
 
 
@@ -159,22 +173,27 @@ def test_dicom_node_down_then_up_retries_without_folder_duplicate(
         paths, make_rtlc, make_scp):
     port = free_port()  # никого не слушает
     inst = make_rtlc(**dicom_opts(SimpleNamespace(port=port)))
-    write_real_dicom(os.path.join(paths['remote'], 'img3.dcm'), seed=3)
+    src = os.path.join(paths['remote'], 'img3.dcm')
+    write_real_dicom(src, seed=3)
 
     assert deliver_until(inst, lambda: len(local_files(paths['local'])) == 1)
     for _ in range(3):
         inst.walker()
-    assert inst.remoteList, 'файл должен ждать недоступный DICOM-узел'
-    entry = inst.state['files'][
-        os.path.join(paths['remote'], 'img3.dcm')]
+    entry = inst.state['files'][src]
     assert entry.get('folder'), 'папка должна быть выполнена'
-    assert not (entry.get('dicom') or {}).get('sent')
-    assert entry['dicom']['attempts'] >= 2
+    d = entry.get('dicom') or {}
+    assert d.get('queued'), 'файл должен стоять в очереди DICOM'
+    assert not d.get('sent')
+    assert d['attempts'] >= 1, 'очередь должна была попытаться отправить'
+    assert not inst.remoteList, ('queued-файл не должен блокировать '
+                                 'walker-бэклог')
 
     scp = make_scp(port)  # узел поднялся
-    assert deliver_until(inst, lambda: len(scp.received) == 1)
+    drain_queue(inst)
+    assert len(scp.received) == 1
     assert len(local_files(paths['local'])) == 1, 'дубль в папке!'
     assert not inst.remoteList
+    assert inst.state['files'][src]['dicom']['sent']
 
 
 # --- Сценарий: не-DICOM файл — перманентная ошибка, без вечного ретрая ---
@@ -188,8 +207,7 @@ def test_non_dicom_file_permanent_error_no_endless_retry(paths, make_rtlc,
         f.write(b'this is not a dicom file at all')
 
     assert deliver_until(inst, lambda: len(local_files(paths['local'])) == 1)
-    for _ in range(3):
-        inst.walker()
+    drain_queue(inst)
     entry = inst.state['files'][bad]
     assert entry['dicom']['permanent'], 'ошибка должна стать перманентной'
     assert entry['dicom']['attempts'] == 1, 'ретраи бессмысленны'
@@ -267,3 +285,99 @@ def test_echo_endpoint_node_down(paths, make_rtlc):
             assert not r.json()['ok']
     finally:
         eng.stop()
+
+
+# --- Очередь: backoff, circuit breaker, quarantine, рестарт ---------------
+
+def test_queue_backoff_grows(paths, make_rtlc, make_scp):
+    port = free_port()
+    inst = make_rtlc(**dicom_opts(
+        SimpleNamespace(port=port), dicom_retry_initial='1',
+        dicom_retry_max='3'))
+    src = os.path.join(paths['remote'], 'backoff.dcm')
+    write_real_dicom(src, seed=5)
+
+    deliver_until(inst, lambda: (inst.state['files'].get(src) or {}).get(
+        'dicom', {}).get('queued'))
+    # deliver_until уже сделал одну попытку отправки
+    d = inst.state['files'][src]['dicom']
+    assert d['attempts'] == 1
+    delta = d['next_attempt'] - time.time()
+    assert 0.5 <= delta <= 2.0, f'backoff после 1-й попытки: {delta:.2f}s'
+
+    time.sleep(1.3)  # ждём окно retry_initial
+    drain_queue(inst)
+    d = inst.state['files'][src]['dicom']
+    assert d['attempts'] == 2
+    delta2 = d['next_attempt'] - time.time()
+    assert 0.5 <= delta2 <= 4.0, f'backoff после 2-й попытки: {delta2:.2f}s'
+    assert not d.get('sent')
+
+
+def test_queue_breaker_opens_and_holds(paths, make_rtlc, make_scp):
+    port = free_port()
+    inst = make_rtlc(**dicom_opts(
+        SimpleNamespace(port=port), dicom_breaker_threshold='2',
+        dicom_breaker_cooldown='60'))
+    src = os.path.join(paths['remote'], 'breaker.dcm')
+    write_real_dicom(src, seed=6)
+    deliver_until(inst, lambda: (inst.state['files'].get(src) or {}).get(
+        'dicom', {}).get('queued'))
+
+    drain_queue(inst)  # фейл 2 -> breaker OPEN
+    assert inst.state['files'][src]['dicom']['attempts'] == 2
+    assert inst.dicom_queue.breaker_state() == 'open'
+    attempts = inst.state['files'][src]['dicom']['attempts']
+
+    time.sleep(0.2)
+    inst.dicom_queue._drain()  # без retry_now: breaker держит паузу
+    assert inst.state['files'][src]['dicom']['attempts'] == attempts, \
+        'при OPEN-шторке попыток быть не должно'
+
+    scp = make_scp(port)
+    drain_queue(inst)  # retry_now внутри сбросил таймеры -> успех
+    assert inst.state['files'][src]['dicom']['sent']
+    assert len(scp.received) == 1
+
+
+def test_queue_quarantine_source_gone(paths, make_rtlc, make_scp):
+    port = free_port()
+    inst = make_rtlc(**dicom_opts(SimpleNamespace(port=port),
+                                  to_folder='false'))
+    src = os.path.join(paths['remote'], 'gone.dcm')
+    write_real_dicom(src, seed=7)
+    deliver_until(inst, lambda: (inst.state['files'].get(src) or {}).get(
+        'dicom', {}).get('queued'))
+    os.remove(src)  # источник исчез до доставки
+
+    drain_queue(inst)
+    d = inst.state['files'][src]['dicom']
+    assert d.get('quarantine'), 'файл должен уйти в quarantine'
+    summary = inst.dicom_queue.summary()
+    assert summary['quarantine'] == 1
+    # walker не пытается его заново (запись quarantine финальна)
+    inst.walker()
+    assert not (inst.state['files'][src]['dicom'].get('queued'))
+
+
+def test_queue_survives_restart(paths, make_rtlc, make_scp):
+    port = free_port()
+    inst = make_rtlc(**dicom_opts(SimpleNamespace(port=port)))
+    src = os.path.join(paths['remote'], 'restart.dcm')
+    ds = write_real_dicom(src, seed=8)
+    deliver_until(inst, lambda: (inst.state['files'].get(src) or {}).get(
+        'dicom', {}).get('queued'))
+    attempts_before = inst.state['files'][src]['dicom']['attempts']
+    inst.dicom_queue = None  # имитация остановки потока
+
+    inst2 = make_rtlc()  # «перезапуск»: config.ini и ledger на диске
+    inst2.walker()  # queued-запись не должна вернуться в активный бэклог
+    assert src not in inst2.remoteList
+
+    scp = make_scp(port)
+    drain_queue(inst2)
+    assert inst2.state['files'][src]['dicom']['sent']
+    assert len(scp.received) == 1
+    assert same_study(scp.received[0], ds)
+    assert inst2.state['files'][src]['dicom']['attempts'] >= \
+        attempts_before

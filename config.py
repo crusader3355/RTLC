@@ -36,6 +36,11 @@ class Config:
         self.dicomCalledAet: str = ''
         self.dicomCallingAet: str = 'RTLC'
         self.dicomTimeout: int = 30
+        self.dicomRetryInitial: int = 30
+        self.dicomRetryMax: int = 600
+        self.dicomBreakerThreshold: int = 5
+        self.dicomBreakerCooldown: int = 120
+        self.dicomQueueTick: int = 5
 
     def getstring(self, section, option, fallback):
         string = self.config.get(section, option, fallback=fallback)
@@ -140,6 +145,18 @@ class Config:
         self.dicomTimeout = self.getint('Dicom',
                                         'timeout',
                                         fallback=self.dicomTimeout)
+        self.dicomRetryInitial = self.getint(
+            'Dicom', 'retry_initial', fallback=self.dicomRetryInitial)
+        self.dicomRetryMax = self.getint('Dicom',
+                                         'retry_max',
+                                         fallback=self.dicomRetryMax)
+        self.dicomBreakerThreshold = self.getint(
+            'Dicom', 'breaker_threshold', fallback=self.dicomBreakerThreshold)
+        self.dicomBreakerCooldown = self.getint(
+            'Dicom', 'breaker_cooldown', fallback=self.dicomBreakerCooldown)
+        self.dicomQueueTick = self.getint('Dicom',
+                                          'queue_tick',
+                                          fallback=self.dicomQueueTick)
 
     def save(self) -> str:
         self.config['Options'] = {
@@ -183,7 +200,12 @@ class Config:
             'port': self.dicomPort,
             'called_aet': self.dicomCalledAet,
             'calling_aet': self.dicomCallingAet,
-            'timeout': self.dicomTimeout
+            'timeout': self.dicomTimeout,
+            'retry_initial': self.dicomRetryInitial,
+            'retry_max': self.dicomRetryMax,
+            'breaker_threshold': self.dicomBreakerThreshold,
+            'breaker_cooldown': self.dicomBreakerCooldown,
+            'queue_tick': self.dicomQueueTick
         }
         try:
             tmp = f'{self.ini}.tmp'

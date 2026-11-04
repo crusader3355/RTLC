@@ -62,6 +62,9 @@ class CopyUtilityNetShare(CopyUtility):
     def _acceptName(self, name):
         return self.matchName(name)
 
+    def sourceExists(self, path):
+        return self.smb.exists(path)
+
 
 class MyService:
 

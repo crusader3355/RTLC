@@ -73,7 +73,9 @@ def write_config(paths, **opts):
     if delivery:
         ini += '\n[Delivery]\n' + '\n'.join(delivery) + '\n'
     dicom = []
-    for k in ('host', 'port', 'called_aet', 'calling_aet', 'timeout'):
+    for k in ('host', 'port', 'called_aet', 'calling_aet', 'timeout',
+              'retry_initial', 'retry_max', 'breaker_threshold',
+              'breaker_cooldown', 'queue_tick'):
         if f'dicom_{k}' in opts:
             dicom.append(f"{k} = {opts[f'dicom_{k}']}")
     if dicom:

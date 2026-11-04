@@ -61,6 +61,7 @@ input.switch:checked::after{left:23px;background:#fff}
 <div class="tabs">
   <button data-tab="status" class="active" onclick="showTab('status')">Статус</button>
   <button data-tab="files" onclick="showTab('files')">Файлы</button>
+  <button data-tab="dicomqueue" onclick="showTab('dicomqueue')">Очередь DICOM</button>
   <button data-tab="log" onclick="showTab('log')">Лог</button>
   <button data-tab="settings" onclick="showTab('settings')">Настройки</button>
 </div>
@@ -97,6 +98,27 @@ input.switch:checked::after{left:23px;background:#fff}
   <div class="panel"><b>Журнал скопированных</b> <span class="dim" id="ledgerTotal"></span>
     <table id="ledger"><thead><tr><th>Скопирован</th><th>Источник</th><th>Копия</th><th>Размер</th><th>DICOM</th></tr></thead><tbody></tbody></table>
     <div style="margin-top:8px"><button class="act sec" onclick="loadLedger()">Обновить</button></div>
+  </div>
+</div>
+
+<div id="tab-dicomqueue" class="tab">
+  <div class="cards">
+    <div class="card"><div class="v" id="qPending">–</div><div class="k">К отправке</div></div>
+    <div class="card"><div class="v" id="qWaiting">–</div><div class="k">В backoff</div></div>
+    <div class="card"><div class="v" id="qPermanent">–</div><div class="k">Permanent</div></div>
+    <div class="card"><div class="v" id="qQuarantine">–</div><div class="k">Quarantine</div></div>
+    <div class="card"><div class="v" id="qSent">–</div><div class="k">Отправлено</div></div>
+    <div class="card"><div class="v" id="qBreaker">–</div><div class="k">Circuit breaker</div></div>
+    <div class="card"><div class="v" id="qOldest" style="font-size:14px">–</div><div class="k">Старейший в очереди</div></div>
+  </div>
+  <div class="panel">
+    <button class="act" onclick="queueRetry()">Отправить сейчас</button>
+    <button class="act sec" onclick="queuePurge()">Очистить permanent</button>
+    <button class="act sec" onclick="loadQueue()">Обновить</button>
+    <span id="qMsg" style="margin-left:10px"></span>
+    <table style="margin-top:10px" id="queueTable"><thead><tr>
+      <th>Поставлен</th><th>Источник</th><th>Размер</th><th>Статус</th><th>Попыток</th><th>Следующая</th><th>Ошибка</th>
+    </tr></thead><tbody></tbody></table>
   </div>
 </div>
 
@@ -141,6 +163,11 @@ let cfgFields=[
  ['dicom_host','DICOM: хост','text'],['dicom_port','DICOM: порт','int'],
  ['dicom_called_aet','DICOM: Called AE Title','text'],['dicom_calling_aet','DICOM: Calling AE Title','text'],
  ['dicom_timeout','DICOM: таймаут, с','int'],
+ ['dicom_retry_initial','DICOM: повтор через, с (старт)','int'],
+ ['dicom_retry_max','DICOM: повтор, макс, с','int'],
+ ['dicom_breaker_threshold','DICOM: breaker, фейлов подряд','int'],
+ ['dicom_breaker_cooldown','DICOM: breaker, пауза, с','int'],
+ ['dicom_queue_tick','DICOM: тик очереди, с','int'],
  ['_sec','Логи'],
  ['logs_level','Уровень логов','loglevel'],
  ['logs_size','Размер лога, МБ','int'],['logs_backups','Бэкапов логов','int'],
@@ -174,6 +201,49 @@ function showTab(name){
   $('tab-'+name).classList.add('active');
   document.querySelector(`.tabs button[data-tab="${name}"]`).classList.add('active');
   if(name==='files')loadLedger(); if(name==='log')loadLog(); if(name==='settings')loadConfig();
+  if(name==='dicomqueue')loadQueue();
+}
+
+const Q_STATE={'pending':['к отправке','var(--ok)'],'waiting':['backoff','var(--warn)'],
+  'permanent':['permanent','var(--bad)'],'quarantine':['quarantine','var(--bad)']};
+async function loadQueue(){
+  try{const r=await api('/api/v1/dicom/queue');const d=await r.json();
+    const s=d.summary;
+    if(!s){['qPending','qWaiting','qPermanent','qQuarantine','qSent','qOldest'].forEach(id=>$(id).textContent='–');
+      $('qBreaker').textContent='—';const tb=$('queueTable').querySelector('tbody');tb.innerHTML='';
+      $('qMsg').innerHTML='<span class="dim">DICOM-доставка выключена или движок не запущен</span>';return;}
+    $('qPending').textContent=s.pending;$('qWaiting').textContent=s.waiting;
+    $('qPermanent').textContent=s.permanent;$('qQuarantine').textContent=s.quarantine;
+    $('qSent').textContent=s.sent;
+    $('qBreaker').textContent=s.breaker==='open'?'OPEN':'closed';
+    $('qBreaker').style.color=s.breaker==='open'?'var(--bad)':'var(--ok)';
+    $('qOldest').textContent=s.oldest_queued_at?fmtDur(Date.now()/1000-s.oldest_queued_at):'—';
+    const tb=$('queueTable').querySelector('tbody');tb.innerHTML='';
+    for(const it of d.items){
+      const st=Q_STATE[it.state]||[it.state,'var(--dim)'];
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${fmtTime(it.queued_at)}</td><td title="${it.path}">${it.path}</td>`
+        +`<td>${fmtSize(it.size)}</td><td style="color:${st[1]}">${st[0]}</td>`
+        +`<td>${it.attempts}</td><td>${it.next_attempt?fmtTime(it.next_attempt):'—'}</td>`
+        +`<td title="${it.last_error||''}" class="dim">${it.last_error||''}</td>`;
+      tb.appendChild(tr);}
+    if(s.pending>50)toast(`DICOM-очередь растёт: ${s.pending} к отправке`,true);
+    if(s.quarantine>0)toast(`Quarantine: ${s.quarantine} файлов не могут быть доставлены (источник исчез)`,true);
+  }catch(e){if(e.message!=='auth')toast(String(e),true);}
+}
+async function queueRetry(){
+  try{const r=await api('/api/v1/dicom/queue/retry_now',{method:'POST'});
+    if(r.ok){$('qMsg').innerHTML='<span class="ok">Таймеры сброшены, досылаем</span>';loadQueue();}
+    else{const d=await r.json();$('qMsg').innerHTML='<span class="err">'+(d.detail||'Ошибка')+'</span>';}
+  }catch(e){if(e.message!=='auth')toast(String(e),true);}
+}
+async function queuePurge(){
+  if(!confirm('Убрать permanent-записи из очереди? Они экспортируются в CSV в Logs/.'))return;
+  try{const r=await api('/api/v1/dicom/queue/purge_permanent',{method:'POST'});
+    const d=await r.json();
+    if(r.ok){$('qMsg').innerHTML=`<span class="ok">Убрано: ${d.purged}${d.archive?(' → '+d.archive):''}</span>`;loadQueue();}
+    else{$('qMsg').innerHTML='<span class="err">'+(d.detail||'Ошибка')+'</span>';}
+  }catch(e){if(e.message!=='auth')toast(String(e),true);}
 }
 
 function renderStatus(s){
@@ -322,6 +392,7 @@ function connectWs(){
   }catch(e){startPolling();}
 }
 setInterval(()=>{if($('tab-log').classList.contains('active')&&$('logAuto').checked)loadLog();},3000);
+setInterval(()=>{if($('tab-dicomqueue').classList.contains('active'))loadQueue();},5000);
 connectWs();startPolling();
 </script>
 </body>
